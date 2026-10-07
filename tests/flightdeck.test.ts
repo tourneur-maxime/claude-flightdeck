@@ -649,7 +649,7 @@ test('without motion or a Client, the trunk is drawn still, each branch in its s
 
 const clockOf = /^(\d\d:\d\d:\d\d|--:--:--)$/
 
-test('Clawd sits at the bottom right in its own colours, and waves while agents run', async ($, on) => {
+test('Clawd sits at the bottom, centred, in its own colours, and waves while agents run', async ($, on) => {
   engine(on)
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'cl1' }))
   await $.turn.start({ text: 'go', turnId: 'CL1' })
@@ -657,10 +657,10 @@ test('Clawd sits at the bottom right in its own colours, and waves while agents 
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   const clawd = await ui.find({ type: 'Client', key: 'clawd' })
   expect([clawd?.props.width, clawd?.props.height]).toEqual([9, 3])
-  // The last thing in the pane, right-aligned.
-  const root = (await ui.drawn()) as { children?: { props?: { justifyContent?: string }; children?: { props?: { key?: string } }[] }[] }
+  // The last thing in the pane, centred across its full width.
+  const root = (await ui.drawn()) as { children?: { props?: { justifyContent?: string; width?: number }; children?: { props?: { key?: string } }[] }[] }
   const last = (root.children ?? []).filter(Boolean).at(-1)
-  expect(last?.props?.justifyContent).toBe('flex-end')
+  expect([last?.props?.justifyContent, last?.props?.width]).toEqual(['center', 64])
   const eyes = await ui.findAll({ in: 'clawd', text: '▛███▛█' })
   expect(eyes.some(t => t.props.color === '#D77757' && t.props.backgroundColor === '#000000')).toBe(true)
   expect(await ui.find({ in: 'clawd', text: /▝▝ {3}▝▝/ })).toBeDefined()

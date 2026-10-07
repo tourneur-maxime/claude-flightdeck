@@ -1107,7 +1107,7 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // ---- Clawd: waves while agents run, blinks while the main loop works, still otherwise
+    // ---- Clawd, centred at the foot: waves while agents run, blinks while the main loop works, still otherwise
     const clawdSpan = (sp: ClawdSpan) =>
       sp.on === 'lid' ? (
         <Text color={CLAWD_COLORS.eyes} backgroundColor={CLAWD_COLORS.body}>
@@ -1121,7 +1121,7 @@ export const register: Register = (on, options) => {
         <Text color={CLAWD_COLORS.body}>{sp.text}</Text>
       )
     const mascot = showMascot ? (
-      <Box justifyContent="flex-end" width={W}>
+      <Box justifyContent="center" width={W}>
         {motion ? (
           <els.Client
             key="clawd"
