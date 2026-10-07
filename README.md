@@ -69,7 +69,7 @@ https://github.com/user-attachments/assets/9ad0fcc3-c81c-427a-a743-f7b6c49f5885
 
 Connectors animate only while work flows: a turn is running, an agent is running, or a consult is open. On the agents' rails and the lanes' trunk each branch flows while its own agent runs and goes dim when it ends. Panels with nothing to show take no room, so a session without subagents shows just the main box and the log.
 
-At the foot of the docked pane stands Clawd, Claude Code's own mascot, in his own colours: he waves while an agent runs, blinks now and then while the main loop works, and stands still otherwise. He is not drawn in the inline summary; `mascot: off` leaves him out.
+At the foot of the docked pane stands Clawd, Claude Code's own mascot, in his own colours: he waves while an agent runs, blinks now and then while the main loop works, and stands still otherwise. He is not drawn in the inline summary, nor in a pane narrower than 40 columns; `mascot: off` leaves him out.
 
 ## Use
 
@@ -119,7 +119,7 @@ What it keeps: short summaries (a tool name plus a path or command, with credent
 - **Per-agent context is the latest request's whole input** (uncached + cache read + cache write). It is labelled `ctx`, not cost: the API has no per-agent cost.
 - **Other loops** can't tell a workflow agent from a compaction fork; both are model loops no card claims.
 - **A background agent's first step** can arrive before its card exists, so its usage may show one step late.
-- **Top-level placement in the agent tree.** Who spawned whom is measured (`parentAgentId`). But an agent whose parent has no card among those drawn (an architect, or an agent dropped from the list or not shown) is drawn at the top level, beside the main loop's own agents. Its expanded card still names the real parent: the architect, or `agent` when no card is left. In the lanes, the trunk column is at most 6 cells wide, so an agent more than two levels below main is drawn at the second level; its expanded card names its real parent.
+- **Top-level placement in the agent tree.** Who spawned whom is measured (`parentAgentId`). But an agent whose parent has no card among those drawn (an architect, or an agent dropped from the list or not shown) is drawn at the top level, beside the main loop's own agents. Its expanded card still names the real parent: the architect, or `agent` when no card is left. In the lanes, the trunk column is at most 6 cells wide. Counting the main loop as level 0, the agents it spawned are at level 1, their children at level 2 and theirs at level 3, each one level further along the trunk. An agent deeper than level 3 is drawn at level 3, keeping its own branch (for instance `│ │ └─`) with the levels between omitted; its expanded card names its real parent.
 
 ## Configure
 
