@@ -1081,8 +1081,6 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column" width={W}>
         <Box justifyContent="center">
           <Text bold wrap="truncate">
-            <Text>FLIGHTDECK</Text>
-            <Text color={C.dim}> · </Text>
             <Text color={C.main}>{modelName.toUpperCase()}</Text>
             <Text>{m.isRunning ? ' WORKS' : ' IDLE'}</Text>
             {showArchitect ? <Text color={C.dim}> · </Text> : null}

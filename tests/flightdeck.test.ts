@@ -262,6 +262,16 @@ test('/clear starts the pane fresh', async ($, on) => {
   await ui.unmount()
 })
 
+test('the header starts with the model: no product label on the pane', async ($, on) => {
+  engine(on)
+  for (const cols of [40, 64, 120]) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    expect(await ui.find({ text: /FLIGHTDECK/ })).toBeUndefined()
+    expect(await ui.find({ text: /^— IDLE$/ })).toBeDefined() // no model yet: the dash, then the state
+    await ui.unmount()
+  }
+})
+
 test('colours come from the theme by default, raw hex only when asked', async ($, on) => {
   engine(on)
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
