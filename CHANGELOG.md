@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- The agents panel draws the spawn tree: a sub-agent sits under the agent that spawned it, read from `agent.spawn`'s `parentAgentId`, at any depth. Lanes show the branch (`├─`, `└─`) before the title, with the time axis still aligned; a sub-agent's card says `↳ parent`; the expanded card names its parent.
+- Each branch of the card rails has its own state: it flows while its agent runs and turns dim once it ends.
+- The header starts with the model; the `FLIGHTDECK` label is gone (the pane's tab still names it).
+
 ## 0.3.2
 
 - A background architect's advice is read from its `SubagentHandback` tool call, where the report actually arrives, with the hand-back text as a fallback. Bold markers no longer leak into the advice line.
