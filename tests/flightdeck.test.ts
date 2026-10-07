@@ -140,6 +140,7 @@ test('config is read leniently: bad values fall back to defaults', () => {
   expect([d.maxCards, d.layout, d.motion, d.moments, d.panels.length]).toEqual([3, 'auto', true, true, 7])
   expect(d.architect.test('fable-advisor:fable-advisor')).toBe(true)
   expect([d.mascot, parseConfig({ mascot: 'off' }).mascot, parseConfig({ mascot: 'nope' }).mascot]).toEqual([true, false, true])
+  expect([d.cost, parseConfig({ cost: 'on' }).cost, parseConfig({ cost: 'nope' }).cost]).toEqual([false, true, false])
   const c = parseConfig({ architectPattern: '([', maxCards: 99, layout: 'diagonal', panels: 'log, gate ,nope,gate', motion: 'off' })
   expect(c.architect.test('advisor')).toBe(true) // invalid regex → default
   expect([c.maxCards, c.layout, c.motion]).toEqual([6, 'auto', false])
@@ -702,6 +703,45 @@ test('inside the frame, three cards need a 66-column pane; at 64 they fall back 
   const cards = under(await at66.find({ key: 'agents-frame' })).filter(b => b.type === 'Box' && b.props.borderStyle === 'round')
   expect(cards.map(b => b.props.width)).toEqual([20, 20, 20])
   await at66.unmount()
+})
+
+// A session that has cost $18.50 before a turn and $19.46 after it, with a 5h limit reading.
+const costlyTurn = async ($: Engine, on: On) => {
+  engine(on)
+  let usd = 18.5
+  const figures = () => ({ context: { window: 200_000, tokens: 20_000, percent: 10 }, rateLimits: [{ kind: 'five_hour', percentUsed: 40 }], cost: { usd } })
+  on('session.usage', () => ({ value: { startedAt: 0, ...figures() } }))
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  await $.session.measure({ ...figures(), changed: ['context', 'rateLimits', 'cost'] })
+  await $.turn.start({ text: 'go', turnId: 'USD1' })
+  usd = 19.46
+  await $.turn.complete({ answer: 'done', durationMs: 67_000, isAborted: false, turnId: 'USD1', reason: 'answer' })
+  await $.session.measure({ ...figures(), changed: ['cost'] })
+}
+
+test('cost: off (the default) draws no dollar amount anywhere, and leaves no separator behind', async ($, on) => {
+  await costlyTurn($, on)
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /\$\d/ })).toBeUndefined()
+  expect(await ui.find({ text: /^last turn 1m07s · 0 agents · 0 edits · 0 errors$/ })).toBeDefined()
+  expect(await ui.find({ text: /^5h $/ })).toBeDefined() // the limits keep their line
+  await ui.unmount()
+  const mini = await $.ui.mount({ ...pane(80), props: { ...pane(80).props, placement: 'inline' as const }, surface: 'terminal' })
+  expect(await mini.find({ type: 'Text', text: /\$\d/ })).toBeUndefined()
+  expect(await mini.find({ text: /^last turn 1m07s · 0 agents · 0 edits · 0 errors$/ })).toBeDefined()
+  await mini.unmount()
+})
+
+test('cost: on draws the session total and the turn receipt in dollars', { options: { cost: 'on' } }, async ($, on) => {
+  await costlyTurn($, on)
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /^\$19\.46 {3}$/ })).toBeDefined()
+  expect(await ui.find({ text: /^ · \+\$0\.96$/ })).toBeDefined()
+  await ui.unmount()
+  const mini = await $.ui.mount({ ...pane(80), props: { ...pane(80).props, placement: 'inline' as const }, surface: 'terminal' })
+  expect(await mini.find({ text: /^ · \$19\.46$/ })).toBeDefined()
+  expect(await mini.find({ text: /· \+\$0\.96$/ })).toBeDefined()
+  await mini.unmount()
 })
 
 // ---------------------------------------------------------------- Clawd

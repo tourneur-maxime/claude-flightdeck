@@ -112,6 +112,7 @@ export type Config = {
   openOnStart: boolean
   statusLine: boolean
   mascot: boolean
+  cost: boolean
 }
 
 const safeRegExp = (source: string, fallback: string) => {
@@ -146,6 +147,7 @@ export const parseConfig = (o: Readonly<Record<string, unknown>>): Config => {
     openOnStart: bool('openOnStart', true),
     statusLine: bool('statusLine', true),
     mascot: str('mascot', 'on') !== 'off',
+    cost: str('cost', 'off') === 'on',
   }
 }
 

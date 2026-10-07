@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Claude Code 2.1.287+](https://img.shields.io/badge/Claude%20Code-2.1.287%2B%20mod-d97757.svg)](https://claude.com/blog/claude-code-mods)
 
-**A Claude Code mod that puts a live agent dashboard in your terminal**: context and cost, an advisor timeline, every permission check, and your subagents as cards or swimlanes. Every number comes from a real session event, and nothing leaves your machine.
+**A Claude Code mod that puts a live agent dashboard in your terminal**: context and rate limits, an advisor timeline, every permission check, and your subagents as cards or swimlanes. Every number comes from a real session event, and nothing leaves your machine.
 
 <p align="center">
   <img src="docs/media/demo.gif" alt="Flightdeck during a live session: five audit subagents fan out as cards, switch to swimlanes and finish, while the permission gate fills with checks" width="520">
@@ -59,12 +59,12 @@ https://github.com/user-attachments/assets/9ad0fcc3-c81c-427a-a743-f7b6c49f5885
 
 | Panel | Shows | From |
 | --- | --- | --- |
-| **main** | model, effort, permission mode, request count; a context gauge with compactions (⟲); cost and the first two rate-limit windows when your plan reports them | `turn.step`, `session.measure`, `session.compact`, `$.session.usage()` |
+| **main** | model, effort, permission mode, request count; a context gauge with compactions (⟲); the first two rate-limit windows when your plan reports them, and the session's cost under `cost: on` | `turn.step`, `session.measure`, `session.compact`, `$.session.usage()` |
 | **architect** | consults on a timeline, whether one is running, how long the last took; optionally the moment of each consult; the first line of a subagent architect's advice | a spawn of a matching agent type, or a matching server tool in the assistant's rows |
 | **gate** | one cell per permission check: green allowed without asking, blue decided by the auto-mode classifier or you and then run, amber pending, red ✗ denied, dim if made inside a subagent. Totals, and a drill-down per tool family with credentials masked | `tool.check`, settled by the `tool.call` around it |
 | **agents** | cards side by side while they fit: the task, type, live context and output tokens, steps, a running clock, `max_tokens` in red. Beyond that, swimlanes on one time axis, hung off one trunk that starts under the header: a branch (`├─`, the last `└─`) per agent. Sub-agents sit under the agent that spawned them, at any depth: one level further along the trunk in the lanes, `↳ parent` on a card, the parent in the expanded card | `agent.spawn` (with its `parentAgentId`), `turn.step`, `tool.call`, `turn.complete` |
 | **loops** | model loops that match no card: workflow agents, compactions, memory forks | `turn.step` ids no card claims |
-| **receipt** | the running turn, or the last one: duration, agents, edits, errors, cost added | `turn.start`, `turn.complete` |
+| **receipt** | the running turn, or the last one: duration, agents, edits, errors, and the cost added under `cost: on` | `turn.start`, `turn.complete` |
 | **log** | prompts, spawns, completions, consults, edits, errors and denials; filtered to one agent while you view its transcript | all of the above |
 
 Connectors animate only while work flows: a turn is running, an agent is running, or a consult is open. On the agents' rails and the lanes' trunk each branch flows while its own agent runs and goes dim when it ends. Panels with nothing to show take no room, so a session without subagents shows just the main box and the log.
@@ -140,6 +140,7 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 | `openOnStart` | `true` | ask to open the pane when a session starts |
 | `statusLine` | `true` | context, running agents, consults and denials in the status line |
 | `mascot` | `on` | `off` leaves Clawd out of the foot of the pane |
+| `cost` | `off` | `on` shows dollar amounts: the session's cost in the main panel and the inline summary, the turn's in the receipt |
 
 ## Troubleshooting
 

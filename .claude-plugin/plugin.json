@@ -116,6 +116,16 @@
         "off"
       ],
       "default": "on"
+    },
+    "cost": {
+      "title": "Cost",
+      "description": "Show dollar amounts: the session's cost in the main panel and the inline summary, and each turn's in the receipt. The figures are still tracked when off",
+      "type": "string",
+      "options": [
+        "on",
+        "off"
+      ],
+      "default": "off"
     }
   }
 }

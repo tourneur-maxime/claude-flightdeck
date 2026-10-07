@@ -619,9 +619,9 @@ export const register: Register = (on, options) => {
             {u.compactions > 0 ? <Text color={C.amber}>{`  ⟲${u.compactions}`}</Text> : null}
           </Text>
         ) : null}
-        {u.costUsd !== null || u.limits.length > 0 ? (
+        {(cfg.cost && u.costUsd !== null) || u.limits.length > 0 ? (
           <Text wrap="truncate">
-            {u.costUsd !== null ? <Text color={C.text}>{`${fmtUsd(u.costUsd)}   `}</Text> : null}
+            {cfg.cost && u.costUsd !== null ? <Text color={C.text}>{`${fmtUsd(u.costUsd)}   `}</Text> : null}
             {u.limits.slice(0, 2).map(l => {
               const lg = gauge(l.pct, 5)
               return (
@@ -940,7 +940,7 @@ export const register: Register = (on, options) => {
             <Text wrap="truncate">
               <Text color={r.reason === 'answer' ? C.gate : C.warn}>{r.reason === 'answer' ? '✓ ' : '✗ '}</Text>
               <Text>{`last turn ${fmtDuration(r.durationMs)} · ${plural(r.agents, 'agent')} · ${plural(r.edits, 'edit')} · ${plural(r.errors, 'error')}`}</Text>
-              {r.costDelta !== null ? <Text color={C.main}>{` · +${fmtUsd(r.costDelta)}`}</Text> : null}
+              {cfg.cost && r.costDelta !== null ? <Text color={C.main}>{` · +${fmtUsd(r.costDelta)}`}</Text> : null}
             </Text>
           ) : (
             <Text color={C.faint}>no turn finished yet</Text>
@@ -1067,7 +1067,7 @@ export const register: Register = (on, options) => {
             {mg ? <Text color={C.faint}>{mg.off}</Text> : null}
             {mg ? <Text>{` ${Math.round(u.pct ?? 0)}%`}</Text> : null}
             {u.compactions > 0 ? <Text color={C.amber}>{` ⟲${u.compactions}`}</Text> : null}
-            {u.costUsd !== null ? <Text dimColor>{` · ${fmtUsd(u.costUsd)}`}</Text> : null}
+            {cfg.cost && u.costUsd !== null ? <Text dimColor>{` · ${fmtUsd(u.costUsd)}`}</Text> : null}
             {showArchitect ? <Text color={C.arch}>{` · ${cfg.architectLabel.toLowerCase()} ${advising ? 'advising' : a.consults.length}`}</Text> : null}
           </Text>
           {strip.length > 0 ? (
@@ -1099,7 +1099,7 @@ export const register: Register = (on, options) => {
           {lp.length > 0 ? <Text dimColor>{`other loops ${lp.length} · ${lp.filter(l => isLoopActive(l, now)).length} active`}</Text> : null}
           {!m.isRunning && r ? (
             <Text dimColor wrap="truncate">
-              {`last turn ${fmtDuration(r.durationMs)} · ${plural(r.agents, 'agent')} · ${plural(r.edits, 'edit')} · ${plural(r.errors, 'error')}${r.costDelta !== null ? ` · +${fmtUsd(r.costDelta)}` : ''}`}
+              {`last turn ${fmtDuration(r.durationMs)} · ${plural(r.agents, 'agent')} · ${plural(r.edits, 'edit')} · ${plural(r.errors, 'error')}${cfg.cost && r.costDelta !== null ? ` · +${fmtUsd(r.costDelta)}` : ''}`}
             </Text>
           ) : null}
         </Box>
