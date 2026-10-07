@@ -758,29 +758,32 @@ export const register: Register = (on, options) => {
       update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), expanded: normalize(DEFAULT_VIEW, x).expanded === id ? null : id }))
 
     const agentsPanel = (w: number) => {
-      // Cards need 20 columns each; when the pane can't hold the limit, lanes take over.
-      const fit = Math.max(1, Math.min(cfg.maxCards, Math.floor((w + 1) / 21)))
+      // A frame like the other panels', in the agents' colour: everything inside is laid out on
+      // its inner width (2 border cells, 2 of padding).
+      const frame = (...content: (JSX.Element | null)[]) => (
+        <Box key="agents-frame" flexDirection="column" borderStyle="round" borderColor={C.agent} paddingX={1} width={w}>
+          {content}
+        </Box>
+      )
+      const iw = Math.max(1, w - 4)
+      // Cards need 20 columns each; when the frame can't hold the limit, lanes take over.
+      const fit = Math.max(1, Math.min(cfg.maxCards, Math.floor((iw + 1) / 21)))
       const useLanes = cards.length > fit
       const header = (
-        <Box justifyContent="space-between" width={w}>
-          <Text bold>{`agents · ${running.length} running · ${cards.length} total`}</Text>
+        <Box justifyContent="space-between" width={iw}>
+          <Text color={C.agent} bold>{`agents · ${running.length} running · ${cards.length} total`}</Text>
           {cards.length > 0 ? <Text color={C.faint}>1-{Math.min(cards.length, useLanes ? 6 : fit)} expand</Text> : null}
         </Box>
       )
       if (cards.length === 0) {
-        return (
-          <Box flexDirection="column" width={w}>
-            {header}
-            <Text color={C.faint}>no subagents yet</Text>
-          </Box>
-        )
+        return frame(header, <Text color={C.faint}>no subagents yet</Text>)
       }
       if (useLanes) {
         // The latest six, drawn as a tree off one trunk that starts under the header (the main
         // loop): a branch per agent, each sub-agent under the agent that spawned it.
         const tree = agentTree(cards.slice(-6))
         const shown = tree.map(row => row.card)
-        const barW = Math.max(8, w - 28)
+        const barW = Math.max(8, iw - 28)
         const geo = lanes(shown, now, barW)
         const earlier = cards.length - shown.length
         const spine = spineRows([
@@ -806,84 +809,80 @@ export const register: Register = (on, options) => {
             })}
           </Box>
         )
-        return (
-          <Box flexDirection="column" width={w}>
-            {header}
-            <Box>
-              {trunk}
-              <Box flexDirection="column">
-                {earlier > 0 ? (
-                  <Box paddingLeft={1}>
-                    <Text color={C.faint}>{`+${earlier} earlier`}</Text>
-                  </Box>
-                ) : null}
-                {tree.map(({ card: c }, i) => {
-                  const gm = geo[i]
-                  const isViewed = viewed === c.id
-                  return (
-                    <Box>
-                      <Text color={statusColor(c)} bold={isViewed}>{` ${isViewed ? '▶' : glyph(c)} `}</Text>
-                      <Box key={`lane-title-${c.id}`} width={titleW} flexShrink={0}>
-                        <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={shorten(cardTitle(c), titleW - 3)} onPress={expandOnPress(c.id)} />
-                      </Box>
-                      <Text color={C.faint}>{' ' + '·'.repeat(gm?.before ?? 0)}</Text>
-                      <Text color={statusColor(c)}>{'━'.repeat(gm?.bar ?? 1)}</Text>
-                      <Text color={C.faint}>{'·'.repeat(gm?.after ?? 0) + ' '}</Text>
-                      {clock(`lane-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}
+        return frame(
+          header,
+          <Box>
+            {trunk}
+            <Box flexDirection="column">
+              {earlier > 0 ? (
+                <Box paddingLeft={1}>
+                  <Text color={C.faint}>{`+${earlier} earlier`}</Text>
+                </Box>
+              ) : null}
+              {tree.map(({ card: c }, i) => {
+                const gm = geo[i]
+                const isViewed = viewed === c.id
+                return (
+                  <Box>
+                    <Text color={statusColor(c)} bold={isViewed}>{` ${isViewed ? '▶' : glyph(c)} `}</Text>
+                    <Box key={`lane-title-${c.id}`} width={titleW} flexShrink={0}>
+                      <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={shorten(cardTitle(c), titleW - 3)} onPress={expandOnPress(c.id)} />
                     </Box>
-                  )
-                })}
-              </Box>
+                    <Text color={C.faint}>{' ' + '·'.repeat(gm?.before ?? 0)}</Text>
+                    <Text color={statusColor(c)}>{'━'.repeat(gm?.bar ?? 1)}</Text>
+                    <Text color={C.faint}>{'·'.repeat(gm?.after ?? 0) + ' '}</Text>
+                    {clock(`lane-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}
+                  </Box>
+                )
+              })}
             </Box>
-          </Box>
+          </Box>,
         )
       }
       const tree = agentTree(cards.slice(-fit))
       const shown = tree.map(row => row.card)
-      const cardW = Math.max(20, Math.floor((w - (shown.length - 1)) / shown.length))
+      const cardW = Math.max(20, Math.floor((iw - (shown.length - 1)) / shown.length))
       // One branch per card on each rail: bright and flowing while that agent runs, dim once it ends.
       const marks = shown.map((c, i) => ({ at: i * (cardW + 1) + Math.floor(cardW / 2), active: c.status === 'running' }))
       const isFlowing = marks.some(mk => mk.active)
-      return (
-        <Box flexDirection="column" width={w}>
-          {header}
-          {rail('fan-out', isFlowing, C.agent, w, marks)}
-          <Box columnGap={1}>
-            {tree.map(({ card: c, parent }, i) => {
-              const isViewed = viewed === c.id
-              const sameModel = !c.model || prettyModel(c.model) === modelName
-              const kind = sameModel ? c.type : `${c.type} · ${prettyModel(c.model)}`
-              return (
-                <Box
-                  flexDirection="column"
-                  borderStyle={isViewed ? 'double' : 'round'}
-                  borderColor={c.lastStop === 'max_tokens' ? C.warn : C.agent}
-                  borderDimColor={c.status !== 'running' && !isViewed}
-                  width={cardW}
-                  paddingX={1}
-                >
-                  <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={titleLines(cardTitle(c), cardW - 7, cardW - 4)[0]} onPress={expandOnPress(c.id)} />
-                  <Text bold wrap="truncate">
-                    {titleLines(cardTitle(c), cardW - 7, cardW - 4)[1]}
+      return frame(
+        header,
+        rail('fan-out', isFlowing, C.agent, iw, marks),
+        <Box columnGap={1}>
+          {tree.map(({ card: c, parent }, i) => {
+            const isViewed = viewed === c.id
+            const sameModel = !c.model || prettyModel(c.model) === modelName
+            const kind = sameModel ? c.type : `${c.type} · ${prettyModel(c.model)}`
+            return (
+              <Box
+                flexDirection="column"
+                borderStyle={isViewed ? 'double' : 'round'}
+                borderColor={c.lastStop === 'max_tokens' ? C.warn : C.agent}
+                borderDimColor={c.status !== 'running' && !isViewed}
+                width={cardW}
+                paddingX={1}
+              >
+                <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={titleLines(cardTitle(c), cardW - 7, cardW - 4)[0]} onPress={expandOnPress(c.id)} />
+                <Text bold wrap="truncate">
+                  {titleLines(cardTitle(c), cardW - 7, cardW - 4)[1]}
+                </Text>
+                <Text color={C.dim} wrap="truncate">
+                  {parent ? `↳ ${shorten(cardTitle(parent), Math.max(6, cardW - 6 - Math.min(kind.length + 3, 10)))} · ${kind}` : kind}
+                </Text>
+                <Text dimColor wrap="truncate">
+                  {c.steps > 0 ? `ctx ${kTokens(c.ctx)} · out ${kTokens(c.out)} · ${c.steps} st` : 'starting…'}
+                </Text>
+                <Box>
+                  <Text color={c.lastStop === 'max_tokens' ? C.warn : statusColor(c)}>
+                    {cardW >= 26 ? `${glyph(c)} ${c.lastStop === 'max_tokens' ? 'max_tokens' : c.status} ` : `${glyph(c)} `}
                   </Text>
-                  <Text color={C.dim} wrap="truncate">
-                    {parent ? `↳ ${shorten(cardTitle(parent), Math.max(6, cardW - 6 - Math.min(kind.length + 3, 10)))} · ${kind}` : kind}
-                  </Text>
-                  <Text dimColor wrap="truncate">
-                    {c.steps > 0 ? `ctx ${kTokens(c.ctx)} · out ${kTokens(c.out)} · ${c.steps} st` : 'starting…'}
-                  </Text>
-                  <Box>
-                    <Text color={c.lastStop === 'max_tokens' ? C.warn : statusColor(c)}>
-                      {cardW >= 26 ? `${glyph(c)} ${c.lastStop === 'max_tokens' ? 'max_tokens' : c.status} ` : `${glyph(c)} `}
-                    </Text>
-                    <Box flexShrink={0}>{clock(`card-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}</Box>
-                  </Box>
+                  <Box flexShrink={0}>{clock(`card-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}</Box>
                 </Box>
-              )
-            })}
-          </Box>
-          {rail('merge', isFlowing, C.agent, w, marks, true)}
-        </Box>
+              </Box>
+            )
+          })}
+        </Box>,
+        rail('merge', isFlowing, C.agent, iw, marks, true),
       )
     }
 
@@ -955,7 +954,7 @@ export const register: Register = (on, options) => {
     // Clawd stands under the log (not inline, nor in a pane narrower than he can stand in).
     const showMascot = cfg.mascot && e.props.bodyColumns >= 40
     const used =
-      2 + 5 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 9 : 0) + (lp.length ? 1 : 0) + 3 + (showMascot ? 3 : 0)
+      2 + 5 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 5 + Math.min(6, cards.length) : 10) + (expandedCard ? 9 : 0) + (lp.length ? 1 : 0) + 3 + (showMascot ? 3 : 0)
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)

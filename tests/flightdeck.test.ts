@@ -558,7 +558,7 @@ test("cards name a sub-agent's parent; the rail lights only the branches still r
   await $.turn.complete({ answer: 'mapped', durationMs: 10, isAborted: false, turnId: 'K1', agentId: 'k2', reason: 'answer' })
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await ui.find({ text: /━/ })).toBeUndefined() // two cards fit: no lanes
-  expect(await ui.find({ text: /^↳ Implement the… · Explore\b/ })).toBeDefined() // 27 cells inside the card
+  expect(await ui.find({ text: /^↳ Implement th… · Explore\b/ })).toBeDefined() // 25 cells inside a card in the frame
   for (const key of ['fan-out', 'merge']) {
     const marks = await ui.findAll({ in: key, text: /[┬┴]/ })
     expect(marks.some(m => m.props.color === 'suggestion' && m.props.bold === true)).toBe(true) // k1 runs
@@ -645,6 +645,65 @@ test('without motion or a Client, the trunk is drawn still, each branch in its s
   }
 })
 
+// Every element drawn under a found one: its tag, props and own string children as text.
+type Drawn = { type: string; props: Record<string, unknown>; text: string }
+const under = (node: { children?: unknown[] } | undefined): Drawn[] =>
+  (node?.children ?? []).flatMap(c => {
+    if (!c || typeof c !== 'object' || !('type' in c)) return []
+    const el = c as { type: string; props?: Record<string, unknown>; children?: unknown[] }
+    const text = (el.children ?? []).filter(x => typeof x === 'string').join('')
+    return [{ type: el.type, props: el.props ?? {}, text }, ...under(el)]
+  })
+
+test('the agents section is framed in the agents colour, its title too, and lanes fit inside', async ($, on) => {
+  engine(on, 65_000)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `fr${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'FR1' })
+  for (const d of ['alpha', 'beta', 'gamma', 'delta']) await $.agent.spawn(spawn('Explore', `task ${d}`))
+  // 120 columns is the wide layout: the agents sit in the right-hand column, (120 - 2) / 2 wide.
+  for (const [cols, w] of [[40, 40], [64, 64], [120, 59]] as const) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    const frame = await ui.find({ key: 'agents-frame' })
+    expect([frame?.props.borderStyle, frame?.props.borderColor, frame?.props.paddingX, frame?.props.width]).toEqual(['round', 'suggestion', 1, w])
+    const inside = under(frame)
+    const title = inside.find(t => t.type === 'Text' && /^agents ·/.test(t.text))
+    expect([title?.props.color, title?.props.bold]).toEqual(['suggestion', true])
+    // Inside the frame (w - 4 cells): the axis spans w - 32 cells (8 at least), and a lane row,
+    // its 19 cells of trunk and title, the axis and its clock, never runs past the frame.
+    const inner = w - 4
+    const axis = inside.filter(t => t.type === 'Text' && /^ ·*$|^━+$|^·* $/.test(t.text))
+    const rowW = axis.reduce((sum, t) => sum + t.text.length, 0) / 4
+    expect(rowW).toBe(Math.max(8, inner - 28) + 2)
+    for (const id of ['fr1', 'fr2', 'fr3', 'fr4']) {
+      const shown = await ui.find({ in: `lane-clock-${id}`, type: 'Text', text: /^\d+:\d\d$/ })
+      expect(19 + rowW + (shown?.text.length ?? 99) <= inner).toBe(true)
+    }
+    await ui.unmount()
+  }
+  // Inline, the summary draws no frame.
+  const mini = await $.ui.mount({ ...pane(80), props: { ...pane(80).props, placement: 'inline' as const }, surface: 'terminal' })
+  expect(await mini.find({ key: 'agents-frame' })).toBeUndefined()
+  expect((await mini.findAll({ type: 'Box' })).some(b => b.props.borderStyle !== undefined)).toBe(false)
+  await mini.unmount()
+})
+
+test('inside the frame, three cards need a 66-column pane; at 64 they fall back to lanes', async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `th${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'TH1' })
+  for (const d of ['alpha', 'beta', 'gamma']) await $.agent.spawn(spawn('Explore', `task ${d}`))
+  const at64 = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await at64.find({ text: /━/ })).toBeDefined() // 60 cells inside: two cards at most
+  await at64.unmount()
+  const at66 = await $.ui.mount({ ...pane(66), surface: 'terminal' })
+  expect(await at66.find({ text: /━/ })).toBeUndefined() // 62 cells inside: three cards of 20
+  const cards = under(await at66.find({ key: 'agents-frame' })).filter(b => b.type === 'Box' && b.props.borderStyle === 'round')
+  expect(cards.map(b => b.props.width)).toEqual([20, 20, 20])
+  await at66.unmount()
+})
+
 // ---------------------------------------------------------------- Clawd
 
 const clockOf = /^(\d\d:\d\d:\d\d|--:--:--)$/
@@ -710,14 +769,14 @@ const logLinesAt = async ($: Engine, on: On, bodyRows: number) => {
   return count
 }
 
-// 8 lanes (3 + 6 rows) beside main, gate and the frame: 25 rows used. 34 rows leave the log 6;
-// Clawd's 3 rows leave it the floor of 4.
+// 8 lanes (3 + 6 rows, + 2 for the agents' frame) beside main, gate and the pane's frame: 27 rows
+// used. 36 rows leave the log 6; Clawd's 3 rows leave it the floor of 4.
 test('Clawd takes its 3 rows from the log, not from the panes below it', async ($, on) => {
-  expect(await logLinesAt($, on, 34)).toBe(4)
+  expect(await logLinesAt($, on, 36)).toBe(4)
 })
 
 test('without Clawd the log keeps those rows', { options: { mascot: 'off' } }, async ($, on) => {
-  expect(await logLinesAt($, on, 34)).toBe(6)
+  expect(await logLinesAt($, on, 36)).toBe(6)
 })
 
 test('VS Code and mobile draw no Client: the trunk and the clocks are drawn still there, motion on', async ($, on) => {
