@@ -60,10 +60,11 @@ export const normalizeGate = (stored: unknown): Gate => {
   }
 }
 
-export const normalizeCard = (stored: unknown): AgentCard =>
-  normalize<AgentCard>(
+export const normalizeCard = (stored: unknown): AgentCard => {
+  const c = normalize<AgentCard>(
     {
       id: '',
+      parentId: null,
       type: 'agent',
       model: '',
       description: '',
@@ -79,6 +80,9 @@ export const normalizeCard = (stored: unknown): AgentCard =>
     },
     stored,
   )
+  // A card saved before parents were kept reads as spawned by the main loop.
+  return typeof c.parentId === 'string' ? c : { ...c, parentId: null }
+}
 
 export const normalizeLog = (stored: unknown): LogLine[] =>
   listOf<Record<string, unknown>>(stored).map(l => ({
@@ -445,6 +449,46 @@ export const fitLegend = <T extends { label: string }>(items: T[], width: number
 
 /** A card's title row: the task in the agent's own words, the type only when there is none. */
 export const cardTitle = (c: AgentCard) => c.description || c.type
+
+export type TreeRow = { card: AgentCard; depth: number; prefix: string; parent: AgentCard | null }
+
+/**
+ * Cards as a tree: each child right after its parent and the parent's earlier children, spawn
+ * order kept among siblings. `prefix` is the branch drawn before the title (`├─`, `└─`, under
+ * `│ ` or `  ` for each level above). A card whose parent has no card here (an architect, a card
+ * evicted or not shown) is drawn at the top level, as the main loop's children are.
+ */
+export const agentTree = (cards: AgentCard[]): TreeRow[] => {
+  const byId = new Map<string, AgentCard>()
+  for (const c of cards) if (!byId.has(c.id)) byId.set(c.id, c)
+  const kids = new Map<string | null, AgentCard[]>()
+  for (const c of cards) {
+    const key = c.parentId !== null && c.parentId !== c.id && byId.has(c.parentId) ? c.parentId : null
+    kids.set(key, [...(kids.get(key) ?? []), c])
+  }
+  const out: TreeRow[] = []
+  const seen = new Set<AgentCard>()
+  const walk = (c: AgentCard, depth: number, lead: string, isLast: boolean, parent: AgentCard | null) => {
+    if (seen.has(c)) return
+    seen.add(c)
+    out.push({ card: c, depth, prefix: depth === 0 ? '' : `${lead}${isLast ? '└─' : '├─'}`, parent })
+    const next = depth === 0 ? '' : `${lead}${isLast ? '  ' : '│ '}`
+    const below = (kids.get(c.id) ?? []).filter(k => !seen.has(k))
+    below.forEach((k, i) => walk(k, depth + 1, next, i === below.length - 1, c))
+  }
+  for (const c of kids.get(null) ?? []) walk(c, 0, '', false, null)
+  // Only a loop in the links (which spawning cannot make) leaves cards unreached: draw them at the top.
+  for (const c of cards) walk(c, 0, '', false, null)
+  return out
+}
+
+/** Who spawned a card, by its real parent id: `main`, the parent card's title, the architect, or `agent`. */
+export const parentLabel = (c: AgentCard, cards: AgentCard[], architectIds: string[], architectName: string) => {
+  if (c.parentId === null) return 'main'
+  const parent = cards.find(x => x.id === c.parentId)
+  if (parent) return cardTitle(parent)
+  return architectIds.includes(c.parentId) ? architectName : 'agent'
+}
 
 /** A title split over two rows at a word boundary: `first` cells on row one, `rest` on row two. */
 export const titleLines = (title: string, first: number, rest: number): [string, string] => {

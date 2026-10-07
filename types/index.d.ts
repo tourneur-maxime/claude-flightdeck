@@ -39,6 +39,8 @@ export type ToolNote = { tool: string; text: string; isError: boolean }
 
 export type AgentCard = {
   id: string
+  /** The loop that spawned it: another agent's id, or null for the main loop. */
+  parentId: string | null
   type: string
   model: string
   description: string

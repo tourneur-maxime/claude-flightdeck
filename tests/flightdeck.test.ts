@@ -6,6 +6,7 @@ import {
   DEFAULT_GATE,
   DEFAULT_TURN,
   afterCall,
+  agentTree,
   applyStep,
   consultTimeline,
   describeInput,
@@ -17,6 +18,7 @@ import {
   logRows,
   momentOf,
   normalizeCard,
+  parentLabel,
   normalizeGate,
   normalizeLog,
   titleLines,
@@ -180,6 +182,47 @@ test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never
   expect(titleLines('Write tinyqueue test suite', 13, 16)).toEqual(['Write', 'tinyqueue test…'])
   expect(titleLines('Short', 13, 16)).toEqual(['Short', ''])
   expect(receiptOf({ ...DEFAULT_TURN, costAtStart: 1, edits: 2 }, { durationMs: 1000, agentsSince: 3, costNow: 1.5, reason: 'answer' }).costDelta).toBe(0.5)
+})
+
+const node = (id: string, parentId: string | null = null, description = id) => ({ ...normalizeCard({}), id, parentId, description })
+
+test('agents form a tree: children follow their parent, spawn order kept, prefixes drawn per level', () => {
+  const tree = agentTree([
+    node('a'),
+    node('b'),
+    node('a1', 'a'),
+    node('a2', 'a'),
+    node('a1x', 'a1'),
+    node('a2x', 'a2'),
+    node('c'),
+  ])
+  expect(tree.map(r => r.card.id)).toEqual(['a', 'a1', 'a1x', 'a2', 'a2x', 'b', 'c'])
+  expect(tree.map(r => r.depth)).toEqual([0, 1, 2, 1, 2, 0, 0])
+  expect(tree.map(r => r.prefix)).toEqual(['', '├─', '│ └─', '└─', '  └─', '', ''])
+  expect(tree.map(r => r.parent?.id ?? null)).toEqual([null, 'a', 'a1', 'a', 'a2', null, null])
+  expect(agentTree([])).toEqual([])
+})
+
+test('an agent whose parent has no card (an architect, an evicted card) is drawn at the top level', () => {
+  const tree = agentTree([node('x', 'gone'), node('y'), node('x1', 'x')])
+  expect(tree.map(r => [r.card.id, r.depth, r.prefix])).toEqual([
+    ['x', 0, ''],
+    ['x1', 1, '└─'],
+    ['y', 0, ''],
+  ])
+  // A loop in the links cannot happen, but must not hang or drop a card.
+  const loop = agentTree([node('p', 'q'), node('q', 'p'), node('s', 's')])
+  expect(loop.map(r => r.card.id).sort()).toEqual(['p', 'q', 's'])
+})
+
+test("a card's parent is named from real ids: main, another card, the architect, or an agent with no card", () => {
+  const cards = [node('a', null, 'Implement the parser'), node('b', 'a'), node('c', 'arch1'), node('d', 'evicted')]
+  expect(parentLabel(cards[0]!, cards, ['arch1'], 'architect')).toBe('main')
+  expect(parentLabel(cards[1]!, cards, ['arch1'], 'architect')).toBe('Implement the parser')
+  expect(parentLabel(cards[2]!, cards, ['arch1'], 'architect')).toBe('architect')
+  expect(parentLabel(cards[3]!, cards, ['arch1'], 'architect')).toBe('agent')
+  expect(normalizeCard({ id: 'old' }).parentId).toBe(null) // state saved before 0.4 reads as a main-loop spawn
+  expect(normalizeCard({ id: 'odd', parentId: 42 }).parentId).toBe(null)
 })
 
 // ---------------------------------------------------------------- drawing

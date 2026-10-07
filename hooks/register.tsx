@@ -464,6 +464,7 @@ export const register: Register = (on, options) => {
     const card: AgentCard = {
       ...normalizeCard({}),
       id,
+      parentId: e.parentAgentId ?? null,
       type: e.name ?? e.subagentType,
       model: started.model,
       description: e.description,
