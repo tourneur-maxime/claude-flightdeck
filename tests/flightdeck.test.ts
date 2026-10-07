@@ -31,7 +31,6 @@ import {
   receiptOf,
   recordCheck,
   CLAWD,
-  clawdPad,
   spineRows,
   redact,
   settleCheck,
@@ -896,27 +895,10 @@ test('without Clawd the log keeps those rows', { options: { mascot: 'off' } }, a
   expect(await logLinesAt($, on, 36)).toBe(6)
 })
 
-test('clawdPad centres Clawd in the rows left, one row kept spare, never negative', () => {
-  expect(clawdPad(70, 25)).toBe(20) // plenty: 45 free, less 1 spare and his 3, halved
-  expect(clawdPad(31, 25)).toBe(1)
-  expect([clawdPad(29, 25), clawdPad(30, 25)]).toEqual([0, 0]) // just room for Clawd himself
-  expect([clawdPad(27, 25), clawdPad(20, 25)]).toEqual([0, 0]) // no room
-  expect([clawdPad(-5, 10), clawdPad(0, 0), clawdPad(10, -5)]).toEqual([0, 0, 3]) // negatives clamp
-})
-
-// Rows a drawn tree takes, as a terminal lays it out: Text 1 row (no wrapped text in these
-// panes), a Client or Svg its height, a column the sum, a row the tallest, plus borders and margins.
+// Docked, the pane's room is bodyRows whatever its tree: the tree's root asks for at least that
+// many rows, and Clawd stands in a column that takes the rows the panels leave and centres him in
+// them; with none left it is his own 3 rows, under the log. Inline the frame fits the tree.
 type Tree = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
-const rowsOf = (n: unknown): number => {
-  if (!n || typeof n !== 'object') return 0
-  const el = n as Tree
-  const p = el.props ?? {}
-  if (el.type === 'Text') return 1
-  if (el.type === 'Client' || el.type === 'Svg') return Number(p.height ?? 1)
-  const kids = (el.children ?? []).filter(c => c && typeof c === 'object')
-  const inner = typeof p.height === 'number' ? p.height : kids.length === 0 ? 0 : p.flexDirection === 'column' ? kids.reduce((sum: number, c) => sum + rowsOf(c), 0) : Math.max(...kids.map(rowsOf))
-  return inner + (p.borderStyle ? 2 : 0) + Number(p.marginTop ?? 0) + Number(p.marginBottom ?? 0)
-}
 
 const withAgents = async ($: Engine, on: On, agents: number) => {
   engine(on)
@@ -929,51 +911,51 @@ const withAgents = async ($: Engine, on: On, agents: number) => {
 const footAt = async ($: Engine, bodyRows: number, placement: 'dock' | 'inline' = 'dock') => {
   const ui = await $.ui.mount({ ...pane(64), props: { ...pane(64).props, placement, scroll: { offset: 0, bodyRows } }, surface: 'terminal' })
   const root = (await ui.drawn()) as Tree
-  const kids = (root.children ?? []).filter(Boolean) as Tree[]
-  const foot = kids.at(-1)
+  const foot = ((root.children ?? []).filter(Boolean) as Tree[]).at(-1)
+  const row = ((foot?.children ?? []).filter(Boolean) as Tree[])[0]
   const clawd = await ui.find({ type: 'Client', key: 'clawd' })
   await ui.unmount()
-  const pad = Number(foot?.props?.marginTop ?? 0)
-  const above = kids.slice(0, -1).reduce((sum, k) => sum + rowsOf(k), 0)
-  return { foot, clawd, pad, above, total: rowsOf(root) }
+  return { root, foot, row, clawd }
 }
 
-const docked = async ($: Engine, on: On, agents: number, bodyRows: number, placement: 'dock' | 'inline' = 'dock') => {
-  await withAgents($, on, agents)
-  return footAt($, bodyRows, placement)
-}
-
-test('docked with room to spare, Clawd stands centred in the rows left below the log', async ($, on) => {
-  const { foot, clawd, pad, above, total } = await docked($, on, 1, 70)
-  expect([clawd?.props.width, clawd?.props.height]).toEqual([9, 3])
-  expect([foot?.props?.justifyContent, foot?.props?.width]).toEqual(['center', 64]) // still the last child
-  expect(rowsOf(foot) - pad).toBe(3)
-  expect(pad > 0).toBe(true)
-  const below = 70 - total
-  expect(below >= 0).toBe(true)
-  expect(Math.abs(pad - below) <= 2).toBe(true) // centred, give or take the spare row and the halving
-  expect(above + pad + 3).toBe(total)
+test('docked, the tree fills the pane and Clawd stands centred in the rows the panels leave', async ($, on) => {
+  await withAgents($, on, 1)
+  for (const bodyRows of [30, 70]) {
+    const { root, foot, row, clawd } = await footAt($, bodyRows)
+    expect(root.props?.minHeight).toBe(bodyRows) // a floor, not a height: a taller tree grows the root
+    expect(root.props?.height).toBeUndefined()
+    expect([foot?.props?.flexGrow, foot?.props?.flexDirection, foot?.props?.justifyContent]).toEqual([1, 'column', 'center'])
+    expect(foot?.props?.marginTop).toBeUndefined()
+    expect([row?.props?.justifyContent, row?.props?.width]).toEqual(['center', 64]) // centred across the pane
+    expect([clawd?.props.width, clawd?.props.height]).toEqual([9, 3]) // 3 rows, the last thing drawn
+  }
 })
 
-test('a short dock leaves Clawd under the log, as inline does', async ($, on) => {
-  expect((await docked($, on, 1, 30)).pad).toBe(0)
+test('docked with 8 agents in lanes, the same: no estimate of the rows above', async ($, on) => {
+  await withAgents($, on, 8)
+  const { root, foot } = await footAt($, 40)
+  expect(root.props?.minHeight).toBe(40)
+  expect([foot?.props?.flexGrow, foot?.props?.justifyContent]).toEqual([1, 'center'])
 })
 
-test('inline, the frame fits the tree: Clawd stays under the log', { options: { layout: 'compact' } }, async ($, on) => {
-  const { clawd, pad } = await docked($, on, 1, 70, 'inline')
+test('inline, the frame fits the tree: no floor, and Clawd stays under the log', { options: { layout: 'compact' } }, async ($, on) => {
+  await withAgents($, on, 1)
+  const { root, foot, row, clawd } = await footAt($, 70, 'inline')
   expect(clawd).toBeDefined()
-  expect(pad).toBe(0)
+  expect(root.props?.minHeight).toBeUndefined()
+  expect([foot?.props?.flexGrow, foot?.props?.marginTop]).toEqual([0, undefined])
+  expect([row?.props?.justifyContent, row?.props?.width]).toEqual(['center', 64])
 })
 
-for (const agents of [0, 1, 3, 8]) {
-  test(`with ${agents} agents, Clawd never pushes the pane past its rows`, async ($, on) => {
-    await withAgents($, on, agents)
-    for (const bodyRows of [28, 30, 34, 36, 50, 70]) {
-      const { pad, total } = await footAt($, bodyRows)
-      if (pad > 0) expect([bodyRows, total <= bodyRows]).toEqual([bodyRows, true])
-    }
-  })
-}
+test('the mini summary and mascot: off draw no Clawd and no column for him', { options: { mascot: 'off' } }, async ($, on) => {
+  await withAgents($, on, 1)
+  const { root, foot, clawd } = await footAt($, 70)
+  expect(clawd).toBeUndefined()
+  expect(foot?.props?.flexGrow).toBeUndefined()
+  expect(root.props?.minHeight).toBe(70)
+  const mini = await footAt($, 70, 'inline') // layout auto, inline: the mini summary
+  expect([mini.clawd, mini.root.props?.minHeight]).toEqual([undefined, undefined])
+})
 
 test('VS Code and mobile draw no Client: the trunk and the clocks are drawn still there, motion on', async ($, on) => {
   engine(on, 65_000) // a real start time, so each lane has a clock to draw

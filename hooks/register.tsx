@@ -19,7 +19,6 @@ import {
   cardTitle,
   CLAWD,
   CLAWD_COLORS,
-  clawdPad,
   titleLines,
   consultTimeline,
   describeInput,
@@ -1125,40 +1124,30 @@ export const register: Register = (on, options) => {
       ) : (
         <Text color={CLAWD_COLORS.body}>{sp.text}</Text>
       )
-    // Docked, the pane has bodyRows whatever its tree: Clawd stands centred in the rows the panels
-    // leave. That is `used` counted only for the panels actually drawn (it charges gate, agents and
-    // receipt even when they are hidden), less Clawd's own 3, plus the log as drawn: its frame and
-    // title (3) and the lines it has, not the rows it may take. Wide, the two columns are counted
-    // end to end, so he sits a little high there. Inline the frame fits the tree: no padding; nor
-    // where an SVG time axis of unknown rows is drawn.
-    const has = (p: Panel) => panels.includes(p)
-    const drawnAbove =
-      2 +
-      (has('main') ? 5 : 0) +
-      (has('architect') ? 6 : 0) +
-      (has('gate') ? 6 + (v.gateOpen ? 5 : 0) : 0) +
-      (has('agents') ? (cards.length > cfg.maxCards ? 5 + Math.min(6, cards.length) : 10) + (expandedCard ? 9 : 0) : 0) +
-      (has('loops') ? 1 : 0) +
-      (has('receipt') ? 3 : 0) +
-      (has('log') ? 3 + Math.max(1, shownLines.length) : 0)
-    const pad = e.props.placement === 'dock' && svgLanes === null ? clawdPad(bodyRows, drawnAbove) : 0
+    // Docked, the pane's room is bodyRows whatever its tree: the root asks for at least that many
+    // rows (a floor, so a taller tree still grows), and Clawd stands in a column that takes the rows
+    // the panels leave and centres him in them; with none left it is his own 3 rows, under the log.
+    // Inline the frame fits the tree: no floor, and the column takes no more than Clawd.
+    const docked = e.props.placement === 'dock'
     const mascot = showMascot ? (
-      <Box justifyContent="center" width={W} marginTop={pad}>
-        {motion ? (
-          <els.Client
-            key="clawd"
-            module="./clawd.tsx"
-            width={9}
-            height={3}
-            props={{ mode: running.length > 0 ? 'agents' : m.isRunning ? 'main' : 'rest', poses: CLAWD, body: CLAWD_COLORS.body, eyes: CLAWD_COLORS.eyes }}
-          />
-        ) : (
-          <Box key="clawd" flexDirection="column" width={9} flexShrink={0}>
-            {CLAWD.default.map(row => (
-              <Box>{row.map(clawdSpan)}</Box>
-            ))}
-          </Box>
-        )}
+      <Box flexGrow={docked ? 1 : 0} flexShrink={0} flexDirection="column" justifyContent="center" width={W}>
+        <Box justifyContent="center" width={W}>
+          {motion ? (
+            <els.Client
+              key="clawd"
+              module="./clawd.tsx"
+              width={9}
+              height={3}
+              props={{ mode: running.length > 0 ? 'agents' : m.isRunning ? 'main' : 'rest', poses: CLAWD, body: CLAWD_COLORS.body, eyes: CLAWD_COLORS.eyes }}
+            />
+          ) : (
+            <Box key="clawd" flexDirection="column" width={9} flexShrink={0}>
+              {CLAWD.default.map(row => (
+                <Box>{row.map(clawdSpan)}</Box>
+              ))}
+            </Box>
+          )}
+        </Box>
       </Box>
     ) : null
 
@@ -1185,7 +1174,7 @@ export const register: Register = (on, options) => {
     )
 
     return (
-      <Box flexDirection="column" width={W}>
+      <Box flexDirection="column" width={W} minHeight={docked && e.props.scroll ? e.props.scroll.bodyRows : undefined}>
         <Box justifyContent="center">
           <Text bold wrap="truncate">
             <Text color={C.main}>{modelName.toUpperCase()}</Text>

@@ -1,8 +1,13 @@
 # Changelog
 
+## 0.5.3
+
+- Clawd's centring no longer estimates the rows above him, an estimate that ran short (rate limits, connectors, cards, the wide layout) and made the pane overflow at some heights. Docked, the pane's tree now asks for at least the pane's rows, and Clawd stands in a column that takes whatever rows the panels and the log leave and centres him in them; with none left it is his own 3 rows, right under the log, and nothing is pushed or cut. Inline, the frame still fits the tree and he stays under the log. The log's own rows are unchanged.
+- 51 tests.
+
 ## 0.5.2
 
-- Docked, Clawd stands centred in the rows left between the log and the foot of the pane instead of right under the log. Those rows are counted from the panels actually drawn and the log's lines as shown, one row kept spare so he never pushes the pane past its height; with no room to spare he stays under the log. Inline, the frame fits the tree and he stays under the log. The log's own rows are unchanged.
+- Docked, Clawd stands centred in the rows left between the log and the foot of the pane instead of right under the log. Inline, the frame fits the tree and he stays under the log. The log's own rows are unchanged. (As shipped, the rows above him were estimated and could come up 3 to 5 rows short, pushing the pane past its height; 0.5.3 replaces the estimate.)
 - 55 tests.
 
 ## 0.5.1

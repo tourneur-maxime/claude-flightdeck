@@ -163,7 +163,7 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 | [`hooks/core.ts`](hooks/core.ts) | every reducer, formatter and layout rule as pure functions, so behaviour is testable directly |
 | [`hooks/rail.tsx`](hooks/rail.tsx), [`hooks/spine.tsx`](hooks/spine.tsx), [`hooks/elapsed.tsx`](hooks/elapsed.tsx), [`hooks/clawd.tsx`](hooks/clawd.tsx) | surface modules: animated connectors, the lanes' trunk, live clocks and Clawd, each redrawing only itself on the surface's own frame clock |
 | [`types/index.d.ts`](types/index.d.ts) | the state contract |
-| [`tests/`](tests) | 55 tests: pure behaviour, plus drawings mounted on every surface at 40–120 columns |
+| [`tests/`](tests) | 51 tests: pure behaviour, plus drawings mounted on every surface at 40–120 columns |
 
 State lives in `$.state` atoms. Every read is merged over defaults, so a missing or older field never breaks the pane; an update that changes the state's shape may still reset its counters once. New to mods? Start with [Claude Code mods](https://claude.com/blog/claude-code-mods) and [Getting started with Claude Code mods](https://claude.dev/blog/getting-started-with-claude-code-mods/).
 
