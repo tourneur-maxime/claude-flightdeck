@@ -769,10 +769,15 @@ export const register: Register = (on, options) => {
       // Cards need 20 columns each; when the frame can't hold the limit, lanes take over.
       const fit = Math.max(1, Math.min(cfg.maxCards, Math.floor((iw + 1) / 21)))
       const useLanes = cards.length > fit
+      // The title truncates rather than run past the frame; the hotkey hint shows only beside it.
+      const title = `agents · ${running.length} running · ${cards.length} total`
+      const hint = cards.length > 0 ? `1-${Math.min(cards.length, useLanes ? 6 : fit)} expand` : ''
       const header = (
         <Box justifyContent="space-between" width={iw}>
-          <Text color={C.agent} bold>{`agents · ${running.length} running · ${cards.length} total`}</Text>
-          {cards.length > 0 ? <Text color={C.faint}>1-{Math.min(cards.length, useLanes ? 6 : fit)} expand</Text> : null}
+          <Text color={C.agent} bold wrap="truncate">
+            {title}
+          </Text>
+          {hint && title.length + 1 + hint.length <= iw ? <Text color={C.faint}>{hint}</Text> : null}
         </Box>
       )
       if (cards.length === 0) {

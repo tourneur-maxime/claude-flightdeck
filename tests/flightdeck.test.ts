@@ -598,14 +598,18 @@ test('lanes hang every agent off one trunk from the header; packets run only to 
     expect(titles.length).toBe(4)
     for (const t of titles) expect(Number(spine?.props.width) + 3 + Number(t.props.width)).toBe(19)
     for (const b of buttons) expect(String(b.props.label).length <= 13 - Number(spine?.props.width)).toBe(true)
-    // A packet runs down the trunk to the running agent's branch; the ended branches stay dim.
-    let packets = 0
+    // A comet runs down the trunk to the running agent's branch: a thick bold head on the wire
+    // (the branch glyphs ├ └ kept), a fading trail; no dots. The ended branches stay dim.
+    let heads = 0
+    let trails = 0
     for (let step = 0; step < 8; step += 1) {
       await ui.advance(130)
-      const lit = await ui.findAll({ in: 'spine', text: /[●•]/ })
-      packets += lit.filter(t => t.props.color === 'suggestion' && t.props.bold === true).length
+      const lit = await ui.findAll({ in: 'spine', type: 'Text' })
+      expect(lit.some(t => /[●•]/.test(t.text))).toBe(false)
+      heads += lit.filter(t => /━/.test(t.text) && t.props.color === 'suggestion' && t.props.bold === true).length
+      trails += lit.filter(t => t.props.color === 'suggestion' && t.props.dimColor === true && t.props.bold !== true).length
     }
-    expect(packets > 0).toBe(true)
+    expect([heads > 0, trails > 0]).toEqual([true, true])
     const drawn = await ui.findAll({ in: 'spine', type: 'Text' })
     expect(drawn.some(t => t.props.color === 'inactive' && /├─/.test(t.text))).toBe(true)
     await ui.unmount()
@@ -742,6 +746,78 @@ test('cost: on draws the session total and the turn receipt in dollars', { optio
   expect(await mini.find({ text: /^ · \$19\.46$/ })).toBeDefined()
   expect(await mini.find({ text: /· \+\$0\.96$/ })).toBeDefined()
   await mini.unmount()
+})
+
+type Run = { type: string; props: { color?: string; bold?: boolean; dimColor?: boolean }; children: unknown[] }
+const runsOf = async (ui: { drawn: (scope?: { in: string }) => Promise<unknown> }, key: string) =>
+  (((await ui.drawn({ in: key })) as { children?: Run[] }).children ?? []).map(r => ({ ...r.props, text: r.children.join('') }))
+
+test('rails carry a comet on the wire: a 2-cell thick head, a 3-cell fading trail, marks kept; nothing while idle', async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `co${++n}` }))
+  on('tool.check', () => ({ decision: 'allow' }))
+  await $.turn.start({ text: 'go', turnId: 'CO1' })
+  await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
+  await $.agent.spawn(spawn('Explore', 'Map the call sites'))
+  await $.turn.complete({ answer: 'mapped', durationMs: 10, isAborted: false, turnId: 'CO1', agentId: 'co2', reason: 'answer' })
+  await $.tool.check({ tool: 'Read', input: { file_path: '/a' }, tool_use_id: 'co-k1' })
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  // The link into the gate panel flows while the main loop works: one comet, head first.
+  let seen = false
+  for (let step = 0; step < 30 && !seen; step += 1) {
+    await ui.advance(110)
+    const runs = await runsOf(ui, 'link-gate')
+    expect(runs.some(r => /[●•]/.test(r.text))).toBe(false)
+    const i = runs.findIndex(r => r.bold === true)
+    if (i < 3 || runs[i]?.text !== '━━') continue
+    expect(runs[i]?.color).toBe('claude')
+    expect([runs[i - 1]?.text, runs[i - 1]?.color, runs[i - 1]?.bold ?? false, runs[i - 1]?.dimColor ?? false]).toEqual(['─', 'claude', false, false])
+    expect([runs[i - 2]?.text, runs[i - 2]?.color, runs[i - 2]?.dimColor]).toEqual(['──', 'claude', true])
+    expect([/^─+$/.test(runs[i - 3]?.text ?? ''), runs[i - 3]?.color]).toEqual([true, 'subtle'])
+    seen = true
+  }
+  expect(seen).toBe(true)
+  // The agents' rails: a head runs along the running card's stretch; the marks keep ┬ and ┴.
+  let heads = 0
+  for (let step = 0; step < 30; step += 1) {
+    await ui.advance(110)
+    for (const key of ['fan-out', 'merge']) {
+      const runs = await runsOf(ui, key)
+      expect(runs.some(r => /[●•]/.test(r.text))).toBe(false)
+      expect(runs.map(r => r.text).join('').replace(/[━─]/g, '').length).toBe(2) // two marks, never overwritten
+      heads += runs.filter(r => /━/.test(r.text) && r.color === 'suggestion' && r.bold === true).length
+    }
+  }
+  expect(heads > 0).toBe(true)
+  await ui.unmount()
+  // Once nothing runs, no head anywhere.
+  await $.turn.complete({ answer: 'done', durationMs: 10, isAborted: false, turnId: 'CO1', agentId: 'co1', reason: 'answer' })
+  await $.turn.complete({ answer: 'done', durationMs: 10, isAborted: false, turnId: 'CO1', reason: 'answer' })
+  const idle = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await idle.advance(500)
+  for (const key of ['fan-out', 'merge', 'link-gate']) expect((await runsOf(idle, key)).some(r => /[━┃]/.test(r.text))).toBe(false)
+  await idle.unmount()
+})
+
+test('the agents title never runs past the frame: the hotkey hint gives way first', async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `tt${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'TT1' })
+  for (let i = 1; i <= 12; i += 1) await $.agent.spawn(spawn('Explore', `job ${i}`))
+  for (const [cols, hint] of [[40, false], [41, false], [64, true]] as const) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    const frame = await ui.find({ key: 'agents-frame' })
+    const header = (frame?.children ?? [])[0] as { props?: { width?: number } } | undefined
+    expect(header?.props?.width).toBe(cols - 4)
+    const texts = under(header as { children?: unknown[] }).filter(t => t.type === 'Text')
+    expect(texts[0]?.text).toBe('agents · 12 running · 12 total')
+    expect(texts[0]?.props.wrap).toBe('truncate')
+    expect(texts.some(t => t.text === '1-6 expand')).toBe(hint)
+    expect(texts.reduce((sum, t) => sum + t.text.length, 0) + (texts.length - 1) <= cols - 4).toBe(true)
+    await ui.unmount()
+  }
 })
 
 // ---------------------------------------------------------------- Clawd
