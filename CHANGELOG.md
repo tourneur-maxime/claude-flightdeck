@@ -3,9 +3,11 @@
 ## 0.5.1
 
 - The agents section sits in a round frame in the agents colour, like the other panels, and its title takes that colour too. Cards, rails and lanes are laid out inside it, 4 cells narrower: three cards now need a 66-column pane (62 before), and the lanes' time axis gives up those 4 cells while the 19 cells before it stay put. The expanded card stays below the frame, and the log gives up the frame's 2 rows.
+- The agents title truncates instead of running past its frame at 40 columns; the `1-k expand` hint shows only when it fits beside it.
+- Rails and the lanes' trunk carry a comet on the wire instead of a dot and a bullet: a 2-cell thick, bold head (`━` along a line, `┃` down the trunk), then a 3-cell trail in the line's own glyph that fades into the dim rest. Marks and branches keep their glyph under it. Spacing and speed are unchanged.
 - Clawd stands centred at the foot of the pane instead of on the right.
 - New `cost` option (`on`/`off`, default `off`): off, the pane draws no dollar amount, neither the session's cost (main panel, inline summary) nor the turn's (receipt). The figures are still tracked.
-- 45 tests.
+- 47 tests.
 
 ## 0.5.0
 
