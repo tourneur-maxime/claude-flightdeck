@@ -249,7 +249,7 @@ const pane = (bodyColumns: number) => ({
 })
 
 let spawnN = 0
-const spawn = (subagentType: string, description: string) => ({
+const spawn = (subagentType: string, description: string, parentAgentId?: string) => ({
   prompt: description,
   description,
   subagentType,
@@ -258,6 +258,7 @@ const spawn = (subagentType: string, description: string) => ({
   parentModel: 'claude-opus-5-5',
   background: true,
   fork: false,
+  ...(parentAgentId ? { parentAgentId } : {}),
 })
 
 test('a fresh session draws on every surface and width, empty panels hidden', async ($, on) => {
@@ -470,5 +471,50 @@ test("a background architect's advice is read from its hand-back", async ($, on)
   })
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await ui.find({ text: /» Ship it after one more gate test\./ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('lanes draw the spawn tree: a branch before each sub-agent, its parent in the expanded panel', async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `g${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'G1' })
+  await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
+  await $.agent.spawn(spawn('general-purpose', 'Review the docs'))
+  await $.agent.spawn(spawn('general-purpose', 'Write parser tests', 'g1'))
+  await $.agent.spawn(spawn('Explore', 'Check edge cases', 'g3'))
+  for (const cols of [40, 64, 120]) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    expect(await ui.find({ text: /4 total/ })).toBeDefined()
+    expect(await ui.find({ text: /^└─ $/ })).toBeDefined() // g3 under g1
+    expect(await ui.find({ text: /^ {2}└─ $/ })).toBeDefined() // g4 under g3
+    // Parent first, then its line of descent, then the next top-level agent.
+    const titles = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => String(k).startsWith('card-'))
+    expect(titles).toEqual(['card-g1', 'card-g3', 'card-g4', 'card-g2'])
+    await ui.press({ key: 'card-g4' })
+    expect(await ui.find({ text: /^parent: Write parser tests$/ })).toBeDefined()
+    await ui.press({ key: 'card-g1' })
+    expect(await ui.find({ text: /^parent: main$/ })).toBeDefined()
+    await ui.press({ key: 'card-g1' }) // closes it again
+    await ui.unmount()
+  }
+})
+
+test("cards name a sub-agent's parent; the rail lights only the branches still running", async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `k${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'K1' })
+  await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
+  await $.agent.spawn(spawn('Explore', 'Map the call sites', 'k1'))
+  await $.turn.complete({ answer: 'mapped', durationMs: 10, isAborted: false, turnId: 'K1', agentId: 'k2', reason: 'answer' })
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /━/ })).toBeUndefined() // two cards fit: no lanes
+  expect(await ui.find({ text: /^↳ Implement the… · Explore\b/ })).toBeDefined() // 27 cells inside the card
+  for (const key of ['fan-out', 'merge']) {
+    const marks = await ui.findAll({ in: key, text: /[┬┴]/ })
+    expect(marks.some(m => m.props.color === 'suggestion' && m.props.bold === true)).toBe(true) // k1 runs
+    expect(marks.some(m => m.props.color === 'subtle')).toBe(true) // k2 is done
+  }
   await ui.unmount()
 })

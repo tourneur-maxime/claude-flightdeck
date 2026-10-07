@@ -2,13 +2,16 @@
 // and it rests as a plain dim line otherwise. Only this region redraws; the pane does not.
 import type { ClientModule } from 'claude-code'
 
+/** A branch to one child: where it drops, and whether that child is still running. */
+type Mark = { at: number; active: boolean }
+
 type Props = {
   active: boolean
   width: number
   color: string
   dim: string
   /** Cells where a branch drops (┬); the rest of the line is ─. */
-  marks: number[]
+  marks: Mark[]
   /** Draw ┴ instead of ┬ at the marks: a merge into what is below. */
   isMerge: boolean
 }
@@ -33,8 +36,9 @@ const Rail: ClientModule<Props, State> = (props, surface) => {
   }
 
   const width = Math.max(1, surface.columns || props.width)
+  const marks = props.marks.filter(m => m.at >= 0 && m.at < width)
   const cells = Array.from({ length: width }, () => '─')
-  for (const m of props.marks) if (m >= 0 && m < width) cells[m] = props.isMerge ? '┴' : '┬'
+  for (const m of marks) cells[m.at] = props.isMerge ? '┴' : '┬'
 
   if (!props.active) {
     return (
@@ -44,6 +48,15 @@ const Rail: ClientModule<Props, State> = (props, surface) => {
     )
   }
 
+  // Each cell belongs to the branch whose mark is nearest: packets flow only along a running
+  // child's stretch, and a finished child's stretch stays still. With no marks, the whole line flows.
+  const owner = (i: number) => {
+    let best: Mark | null = null
+    for (const m of marks) if (!best || Math.abs(m.at - i) < Math.abs(best.at - i)) best = m
+    return best
+  }
+  const flows = cells.map((_, i) => owner(i)?.active ?? true)
+
   // Two packets per 24 cells, a bright head and a trailing dot, moving left to right.
   const lit = new Map<number, string>()
   for (let base = 0; base < width + 24; base += 24) {
@@ -51,12 +64,15 @@ const Rail: ClientModule<Props, State> = (props, surface) => {
     if (head < width) lit.set(head, '●')
     if (head - 1 >= 0 && head - 1 < width) lit.set(head - 1, '•')
   }
+  const markAt = new Map(marks.map(m => [m.at, m]))
   // Runs, not cells: consecutive cells of one kind share a Text, a handful of nodes per frame.
+  // A running child's mark is always bright; a finished child's mark is dim and no packet covers it.
   const runs: { text: string; isLit: boolean }[] = []
   cells.forEach((ch, i) => {
-    const isLit = lit.has(i)
+    const mark = markAt.get(i)
+    const glyph = mark ? ch : flows[i] ? lit.get(i) ?? ch : ch
+    const isLit = mark ? mark.active : flows[i] === true && lit.has(i)
     const last = runs[runs.length - 1]
-    const glyph = lit.get(i) ?? ch
     if (last && last.isLit === isLit) last.text += glyph
     else runs.push({ text: glyph, isLit })
   })

@@ -13,6 +13,7 @@ import {
   EDIT_TOOLS,
   SCHEMA_VERSION,
   afterCall,
+  agentTree,
   applyStep,
   bucketOf,
   cardTitle,
@@ -44,6 +45,7 @@ import {
   PALETTES,
   SVG_COLORS,
   parseConfig,
+  parentLabel,
   prettyModel,
   promptLine,
   handbackOf,
@@ -559,7 +561,7 @@ export const register: Register = (on, options) => {
     const decider = m.mode === 'auto' ? 'classifier' : 'you'
 
     // A connector between panels: animated while its flow is live, a dim line otherwise.
-    const rail = (key: string, active: boolean, color: string, width: number, marks: number[] = [], isMerge = false) =>
+    const rail = (key: string, active: boolean, color: string, width: number, marks: { at: number; active: boolean }[] = [], isMerge = false) =>
       motion ? (
         <els.Client
           key={key}
@@ -769,21 +771,26 @@ export const register: Register = (on, options) => {
         )
       }
       if (useLanes) {
-        const shown = cards.slice(-6)
+        // The latest six, then drawn as a tree: each sub-agent under the agent that spawned it.
+        const tree = agentTree(cards.slice(-6))
+        const shown = tree.map(row => row.card)
         const barW = Math.max(8, w - 28)
         const geo = lanes(shown, now, barW)
         return (
           <Box flexDirection="column" width={w}>
             {header}
             {cards.length > shown.length ? <Text color={C.faint}>{`+${cards.length - shown.length} earlier`}</Text> : null}
-            {shown.map((c, i) => {
+            {tree.map(({ card: c, prefix }, i) => {
               const gm = geo[i]
               const isViewed = viewed === c.id
+              // The branch shares the title's 17 cells, so the time axis stays aligned at any depth.
+              const branch = prefix ? `${prefix.slice(-6)} ` : ''
               return (
                 <Box>
                   <Text color={statusColor(c)} bold={isViewed}>{`${isViewed ? '▶' : glyph(c)} `}</Text>
                   <Box width={17}>
-                    <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={shorten(cardTitle(c), 14)} onPress={expandOnPress(c.id)} />
+                    {branch ? <Text color={statusColor(c)}>{branch}</Text> : null}
+                    <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={shorten(cardTitle(c), 14 - branch.length)} onPress={expandOnPress(c.id)} />
                   </Box>
                   <Text color={C.faint}>{' ' + '·'.repeat(gm?.before ?? 0)}</Text>
                   <Text color={statusColor(c)}>{'━'.repeat(gm?.bar ?? 1)}</Text>
@@ -795,17 +802,21 @@ export const register: Register = (on, options) => {
           </Box>
         )
       }
-      const shown = cards.slice(-fit)
+      const tree = agentTree(cards.slice(-fit))
+      const shown = tree.map(row => row.card)
       const cardW = Math.max(20, Math.floor((w - (shown.length - 1)) / shown.length))
-      const centers = shown.map((_, i) => i * (cardW + 1) + Math.floor(cardW / 2))
+      // One branch per card on each rail: bright and flowing while that agent runs, dim once it ends.
+      const marks = shown.map((c, i) => ({ at: i * (cardW + 1) + Math.floor(cardW / 2), active: c.status === 'running' }))
+      const isFlowing = marks.some(mk => mk.active)
       return (
         <Box flexDirection="column" width={w}>
           {header}
-          {rail('fan-out', running.length > 0, C.agent, w, centers)}
+          {rail('fan-out', isFlowing, C.agent, w, marks)}
           <Box columnGap={1}>
-            {shown.map((c, i) => {
+            {tree.map(({ card: c, parent }, i) => {
               const isViewed = viewed === c.id
               const sameModel = !c.model || prettyModel(c.model) === modelName
+              const kind = sameModel ? c.type : `${c.type} · ${prettyModel(c.model)}`
               return (
                 <Box
                   flexDirection="column"
@@ -820,7 +831,7 @@ export const register: Register = (on, options) => {
                     {titleLines(cardTitle(c), cardW - 7, cardW - 4)[1]}
                   </Text>
                   <Text color={C.dim} wrap="truncate">
-                    {sameModel ? c.type : `${c.type} · ${prettyModel(c.model)}`}
+                    {parent ? `↳ ${shorten(cardTitle(parent), Math.max(6, cardW - 6 - Math.min(kind.length + 3, 10)))} · ${kind}` : kind}
                   </Text>
                   <Text dimColor wrap="truncate">
                     {c.steps > 0 ? `ctx ${kTokens(c.ctx)} · out ${kTokens(c.out)} · ${c.steps} st` : 'starting…'}
@@ -835,7 +846,7 @@ export const register: Register = (on, options) => {
               )
             })}
           </Box>
-          {rail('merge', running.length > 0, C.agent, w, centers, true)}
+          {rail('merge', isFlowing, C.agent, w, marks, true)}
         </Box>
       )
     }
@@ -848,6 +859,7 @@ export const register: Register = (on, options) => {
             {expandedCard.description || expandedCard.type}
           </Text>
           <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)} · ${expandedCard.status} · ${expandedCard.steps} steps`}</Text>
+          <Text dimColor wrap="truncate">{`parent: ${shorten(parentLabel(expandedCard, cards, a.ids, cfg.architectLabel.toLowerCase()), Math.max(10, w - 12))}`}</Text>
           {expandedCard.tools.length === 0 ? <Text color={C.faint}>no tool calls yet</Text> : null}
           {expandedCard.tools.map(n => (
             <Text color={n.isError ? C.warn : C.text} wrap="truncate">
@@ -904,7 +916,7 @@ export const register: Register = (on, options) => {
     }
 
     // ---- log: whatever rows the other panels leave, 4 to 8
-    const used = 2 + 5 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + 3
+    const used = 2 + 5 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 9 : 0) + (lp.length ? 1 : 0) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
