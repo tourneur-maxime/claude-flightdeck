@@ -62,12 +62,14 @@ https://github.com/user-attachments/assets/9ad0fcc3-c81c-427a-a743-f7b6c49f5885
 | **main** | model, effort, permission mode, request count; a context gauge with compactions (⟲); cost and the first two rate-limit windows when your plan reports them | `turn.step`, `session.measure`, `session.compact`, `$.session.usage()` |
 | **architect** | consults on a timeline, whether one is running, how long the last took; optionally the moment of each consult; the first line of a subagent architect's advice | a spawn of a matching agent type, or a matching server tool in the assistant's rows |
 | **gate** | one cell per permission check: green allowed without asking, blue decided by the auto-mode classifier or you and then run, amber pending, red ✗ denied, dim if made inside a subagent. Totals, and a drill-down per tool family with credentials masked | `tool.check`, settled by the `tool.call` around it |
-| **agents** | cards side by side while they fit: the task, type, live context and output tokens, steps, a running clock, `max_tokens` in red. Beyond that, swimlanes on one time axis. Sub-agents sit under the agent that spawned them, at any depth: a branch (`├─` `└─`) before a lane's title, `↳ parent` on a card, the parent in the expanded card | `agent.spawn` (with its `parentAgentId`), `turn.step`, `tool.call`, `turn.complete` |
+| **agents** | cards side by side while they fit: the task, type, live context and output tokens, steps, a running clock, `max_tokens` in red. Beyond that, swimlanes on one time axis, hung off one trunk that starts under the header: a branch (`├─`, the last `└─`) per agent. Sub-agents sit under the agent that spawned them, at any depth: one level further along the trunk in the lanes, `↳ parent` on a card, the parent in the expanded card | `agent.spawn` (with its `parentAgentId`), `turn.step`, `tool.call`, `turn.complete` |
 | **loops** | model loops that match no card: workflow agents, compactions, memory forks | `turn.step` ids no card claims |
 | **receipt** | the running turn, or the last one: duration, agents, edits, errors, cost added | `turn.start`, `turn.complete` |
 | **log** | prompts, spawns, completions, consults, edits, errors and denials; filtered to one agent while you view its transcript | all of the above |
 
-Connectors animate only while work flows: a turn is running, an agent is running, or a consult is open. On the agents' rails each branch flows while its own agent runs and goes dim when it ends. Panels with nothing to show take no room, so a session without subagents shows just the main box and the log.
+Connectors animate only while work flows: a turn is running, an agent is running, or a consult is open. On the agents' rails and the lanes' trunk each branch flows while its own agent runs and goes dim when it ends. Panels with nothing to show take no room, so a session without subagents shows just the main box and the log.
+
+At the foot of the docked pane stands Clawd, Claude Code's own mascot, in his own colours: he waves while an agent runs, blinks now and then while the main loop works, and stands still otherwise. He is not drawn in the inline summary; `mascot: off` leaves him out.
 
 ## Use
 
@@ -91,7 +93,7 @@ Focus the pane with `ctrl+x tab`, then:
 
 - **Fullscreen terminal:** docked beside the transcript; two columns from 110 columns wide.
 - **Main-screen terminal:** inline above the prompt, as the 8-row summary.
-- **Desktop app, VS Code, mobile:** the same panels, plus the agents drawn as an SVG time axis. VS Code and mobile can't animate, so connectors and clocks are static there.
+- **Desktop app, VS Code, mobile:** the same panels, plus the agents drawn as an SVG time axis. VS Code and mobile can't animate, so connectors, the lanes' trunk, clocks and Clawd are static there.
 
 With `openOnStart`, the pane opens by itself when a session starts, in terminals at least 144 columns wide; below that, `/flightdeck` opens it. Colours come from your Claude Code theme, so light, dark and colour-blind themes all read.
 
@@ -117,7 +119,7 @@ What it keeps: short summaries (a tool name plus a path or command, with credent
 - **Per-agent context is the latest request's whole input** (uncached + cache read + cache write). It is labelled `ctx`, not cost: the API has no per-agent cost.
 - **Other loops** can't tell a workflow agent from a compaction fork; both are model loops no card claims.
 - **A background agent's first step** can arrive before its card exists, so its usage may show one step late.
-- **Top-level placement in the agent tree.** Who spawned whom is measured (`parentAgentId`). But an agent whose parent has no card among those drawn (an architect, or an agent dropped from the list or not shown) is drawn at the top level, beside the main loop's own agents. Its expanded card still names the real parent: the architect, or `agent` when no card is left.
+- **Top-level placement in the agent tree.** Who spawned whom is measured (`parentAgentId`). But an agent whose parent has no card among those drawn (an architect, or an agent dropped from the list or not shown) is drawn at the top level, beside the main loop's own agents. Its expanded card still names the real parent: the architect, or `agent` when no card is left. In the lanes, the trunk column is at most 6 cells wide, so an agent more than two levels below main is drawn at the second level; its expanded card names its real parent.
 
 ## Configure
 
@@ -137,6 +139,7 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 | `palette` | `theme` | `pastel` uses fixed colours tuned for dark terminals |
 | `openOnStart` | `true` | ask to open the pane when a session starts |
 | `statusLine` | `true` | context, running agents, consults and denials in the status line |
+| `mascot` | `on` | `off` leaves Clawd out of the foot of the pane |
 
 ## Troubleshooting
 
@@ -147,7 +150,7 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 
 **Colours look wrong.** Set `palette` to `pastel` in `/config`.
 
-**It's too much motion.** Set `motion` to `off`.
+**It's too much motion.** Set `motion` to `off`; Clawd then stands still too, and `mascot: off` removes him.
 
 **Counters look stale after an update.** Run `/flightdeck reset`.
 
@@ -157,9 +160,9 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 | --- | --- |
 | [`hooks/register.tsx`](hooks/register.tsx) | the event hooks, state access, and one function per panel |
 | [`hooks/core.ts`](hooks/core.ts) | every reducer, formatter and layout rule as pure functions, so behaviour is testable directly |
-| [`hooks/rail.tsx`](hooks/rail.tsx), [`hooks/elapsed.tsx`](hooks/elapsed.tsx) | surface modules: animated connectors and live clocks that redraw only themselves, on the surface's own frame clock |
+| [`hooks/rail.tsx`](hooks/rail.tsx), [`hooks/spine.tsx`](hooks/spine.tsx), [`hooks/elapsed.tsx`](hooks/elapsed.tsx), [`hooks/clawd.tsx`](hooks/clawd.tsx) | surface modules: animated connectors, the lanes' trunk, live clocks and Clawd, each redrawing only itself on the surface's own frame clock |
 | [`types/index.d.ts`](types/index.d.ts) | the state contract |
-| [`tests/`](tests) | 30 tests: pure behaviour, plus drawings mounted on every surface at 40–120 columns |
+| [`tests/`](tests) | 41 tests: pure behaviour, plus drawings mounted on every surface at 40–120 columns |
 
 State lives in `$.state` atoms. Every read is merged over defaults, so a missing or older field never breaks the pane; an update that changes the state's shape may still reset its counters once. New to mods? Start with [Claude Code mods](https://claude.com/blog/claude-code-mods) and [Getting started with Claude Code mods](https://claude.dev/blog/getting-started-with-claude-code-mods/).
 

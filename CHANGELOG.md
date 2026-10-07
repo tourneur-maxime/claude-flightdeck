@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Swimlanes hang off one trunk that starts under the agents header: every agent gets a branch (`├─`, the last one `└─`), main's own agents included, so a session that spawns many agents from the main loop now shows the flow too. Packets run down the trunk and out along each running agent's branch; ended branches stay dim. One `Client` draws the whole column; without motion, or on VS Code and mobile, the same glyphs are drawn still in each agent's status colour. No row is added and the time axis stays aligned at 40, 64 and 120 columns.
+- Clawd, Claude Code's own mascot, stands at the foot of the docked pane: he waves while agents run, blinks while the main loop works, and stands still otherwise. The new `mascot` option (`on`/`off`) leaves him out; the log gives up his 3 rows.
+- Fix: on VS Code and mobile, rails and live clocks drew as empty boxes; they are drawn still there now.
+- 41 tests.
+
 ## 0.4.0
 
 - The agents panel draws the spawn tree: a sub-agent sits under the agent that spawned it, read from `agent.spawn`'s `parentAgentId`, at any depth. Lanes show the branch (`├─`, `└─`) before the title, with the time axis still aligned; a sub-agent's card says `↳ parent`; the expanded card names its parent.
