@@ -111,6 +111,7 @@ export type Config = {
   palette: Palette
   openOnStart: boolean
   statusLine: boolean
+  mascot: boolean
 }
 
 const safeRegExp = (source: string, fallback: string) => {
@@ -144,6 +145,7 @@ export const parseConfig = (o: Readonly<Record<string, unknown>>): Config => {
     palette: str('palette', 'theme') === 'pastel' ? 'pastel' : 'theme',
     openOnStart: bool('openOnStart', true),
     statusLine: bool('statusLine', true),
+    mascot: str('mascot', 'on') !== 'off',
   }
 }
 
@@ -536,6 +538,32 @@ export const spineRows = (input: { prefix: string; active: boolean }[]): { rows:
     }
   })
   return { rows: cut.map((p, i) => ({ prefix: p.padEnd(width), active: input[i]?.active ?? false, flow: flow[i] ?? [] })), width }
+}
+
+// ---------------------------------------------------------------- Clawd
+
+/** One run of Clawd's glyphs: plain body, `eyes` (body on the eye colour), or a `lid` (eye colour on body). */
+export type ClawdSpan = { text: string; on?: 'eyes' | 'lid' }
+export type ClawdPose = 'default' | 'armsUp' | 'blink' | 'wink'
+
+/** Clawd's colours as Claude Code paints him: the `claude` orange, black eyes. */
+export const CLAWD_COLORS = { body: '#D77757', eyes: '#000000' }
+
+const clawd = (arms: 'down' | 'up', eyes: ClawdSpan[]): ClawdSpan[][] => [
+  [{ text: arms === 'up' ? '▗▟' : ' ▐' }, ...eyes, ...(arms === 'up' ? [{ text: '▄' }] : [])],
+  [{ text: arms === 'up' ? ' ▜' : '▝▜' }, { text: '█████', on: 'eyes' }, { text: arms === 'up' ? '█▘' : '█▀' }],
+  [{ text: ' ▝▝   ▝▝ ' }],
+]
+
+/**
+ * Clawd, 3 rows of at most 9 cells, glyph for glyph as Claude Code's own welcome draws him: arms
+ * down or up, eyes open, closed (two lids) or winking (one lid).
+ */
+export const CLAWD: Record<ClawdPose, ClawdSpan[][]> = {
+  default: clawd('down', [{ text: '▛███▛█', on: 'eyes' }]),
+  armsUp: clawd('up', [{ text: '▛███▛█', on: 'eyes' }]),
+  blink: clawd('down', [{ text: '▂', on: 'lid' }, { text: '███', on: 'eyes' }, { text: '▂', on: 'lid' }, { text: '█', on: 'eyes' }]),
+  wink: clawd('up', [{ text: '▛███', on: 'eyes' }, { text: '▂', on: 'lid' }, { text: '█', on: 'eyes' }]),
 }
 
 /** Who spawned a card, by its real parent id: `main`, the parent card's title, the architect, or `agent`. */

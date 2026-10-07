@@ -1,5 +1,6 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
 import {
   DEFAULT_ARCHITECT,
@@ -29,6 +30,7 @@ import {
   adviceLine,
   receiptOf,
   recordCheck,
+  CLAWD,
   spineRows,
   redact,
   settleCheck,
@@ -137,6 +139,7 @@ test('config is read leniently: bad values fall back to defaults', () => {
   const d = parseConfig({})
   expect([d.maxCards, d.layout, d.motion, d.moments, d.panels.length]).toEqual([3, 'auto', true, true, 7])
   expect(d.architect.test('fable-advisor:fable-advisor')).toBe(true)
+  expect([d.mascot, parseConfig({ mascot: 'off' }).mascot, parseConfig({ mascot: 'nope' }).mascot]).toEqual([true, false, true])
   const c = parseConfig({ architectPattern: '([', maxCards: 99, layout: 'diagonal', panels: 'log, gate ,nope,gate', motion: 'off' })
   expect(c.architect.test('advisor')).toBe(true) // invalid regex → default
   expect([c.maxCards, c.layout, c.motion]).toEqual([6, 'auto', false])
@@ -245,6 +248,16 @@ test('the lanes trunk: one column of equal-width rows, cut to 6 cells, lit only 
   const cut = spineRows([{ prefix: '│ │ │ └─', active: false }])
   expect([cut.width, cut.rows[0]?.prefix]).toEqual([6, '│ │ └─'])
   expect(spineRows([]).width).toBe(0)
+})
+
+test("Clawd's poses are the official glyphs: 3 rows of 9 cells, eyes and lids marked", () => {
+  const text = (pose: keyof typeof CLAWD, row: number) => (CLAWD[pose][row] ?? []).map(s => s.text).join('')
+  expect([text('default', 0), text('default', 1), text('default', 2)]).toEqual([' ▐▛███▛█', '▝▜██████▀', ' ▝▝   ▝▝ '])
+  expect([text('armsUp', 0), text('armsUp', 1)]).toEqual(['▗▟▛███▛█▄', ' ▜██████▘'])
+  expect(text('blink', 0)).toBe(' ▐▂███▂█')
+  expect(text('wink', 0)).toBe('▗▟▛███▂█▄')
+  expect(CLAWD.blink[0]?.filter(s => s.on === 'lid').map(s => s.text)).toEqual(['▂', '▂'])
+  for (const pose of Object.values(CLAWD)) for (const row of pose) expect(row.reduce((n, s) => n + s.text.length, 0) <= 9).toBe(true)
 })
 
 test("a card's parent is named from real ids: main, another card, the architect, or an agent with no card", () => {
@@ -630,6 +643,81 @@ test('without motion or a Client, the trunk is drawn still, each branch in its s
     expect(branches[1]?.props.color).toBe('suggestion') // f2 runs
     await ui.unmount()
   }
+})
+
+// ---------------------------------------------------------------- Clawd
+
+const clockOf = /^(\d\d:\d\d:\d\d|--:--:--)$/
+
+test('Clawd sits at the bottom right in its own colours, and waves while agents run', async ($, on) => {
+  engine(on)
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'cl1' }))
+  await $.turn.start({ text: 'go', turnId: 'CL1' })
+  await $.agent.spawn(spawn('Explore', 'look around'))
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  const clawd = await ui.find({ type: 'Client', key: 'clawd' })
+  expect([clawd?.props.width, clawd?.props.height]).toEqual([9, 3])
+  // The last thing in the pane, right-aligned.
+  const root = (await ui.drawn()) as { children?: { props?: { justifyContent?: string }; children?: { props?: { key?: string } }[] }[] }
+  const last = (root.children ?? []).filter(Boolean).at(-1)
+  expect(last?.props?.justifyContent).toBe('flex-end')
+  const eyes = await ui.findAll({ in: 'clawd', text: '▛███▛█' })
+  expect(eyes.some(t => t.props.color === '#D77757' && t.props.backgroundColor === '#000000')).toBe(true)
+  expect(await ui.find({ in: 'clawd', text: /▝▝ {3}▝▝/ })).toBeDefined()
+  let armsUp = false
+  for (let step = 0; step < 6 && !armsUp; step += 1) {
+    await ui.advance(300)
+    armsUp = (await ui.find({ in: 'clawd', text: /▗▟/ })) !== undefined
+  }
+  expect(armsUp).toBe(true)
+  await ui.unmount()
+})
+
+test('Clawd is drawn still where there is no Client, and not at all inline or under mascot: off', async ($, on) => {
+  engine(on)
+  for (const surface of ['vscode', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...pane(64), surface })
+    expect(await ui.find({ key: 'clawd' })).toBeDefined()
+    const eyes = await ui.find({ type: 'Text', text: '▛███▛█' })
+    expect([eyes?.props.color, eyes?.props.backgroundColor]).toEqual(['#D77757', '#000000'])
+    await ui.unmount()
+  }
+  const mini = await $.ui.mount({ ...pane(80), props: { ...pane(80).props, placement: 'inline' as const }, surface: 'terminal' })
+  expect(await mini.find({ key: 'clawd' })).toBeUndefined()
+  expect(await mini.find({ text: /▛███/ })).toBeUndefined()
+  await mini.unmount()
+})
+
+test('mascot: off leaves Clawd out', { options: { mascot: 'off' } }, async ($, on) => {
+  engine(on)
+  for (const surface of ['terminal', 'vscode'] as const) {
+    const ui = await $.ui.mount({ ...pane(64), surface })
+    expect(await ui.find({ key: 'clawd' })).toBeUndefined()
+    expect(await ui.find({ text: /▛███/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+const logLinesAt = async ($: Engine, on: On, bodyRows: number) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `lg${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'LG1' })
+  for (let i = 1; i <= 8; i += 1) await $.agent.spawn(spawn('Explore', `job ${i}`))
+  const ui = await $.ui.mount({ ...pane(64), props: { ...pane(64).props, scroll: { offset: 0, bodyRows } }, surface: 'terminal' })
+  const count = (await ui.findAll({ type: 'Text', text: clockOf })).length
+  await ui.unmount()
+  return count
+}
+
+// 8 lanes (3 + 6 rows) beside main, gate and the frame: 25 rows used. 34 rows leave the log 6;
+// Clawd's 3 rows leave it the floor of 4.
+test('Clawd takes its 3 rows from the log, not from the panes below it', async ($, on) => {
+  expect(await logLinesAt($, on, 34)).toBe(4)
+})
+
+test('without Clawd the log keeps those rows', { options: { mascot: 'off' } }, async ($, on) => {
+  expect(await logLinesAt($, on, 34)).toBe(6)
 })
 
 test('VS Code and mobile draw no Client: the trunk and the clocks are drawn still there, motion on', async ($, on) => {

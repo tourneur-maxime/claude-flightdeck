@@ -106,6 +106,16 @@
       "description": "Show context, agents, consults and denials in the status line",
       "type": "boolean",
       "default": true
+    },
+    "mascot": {
+      "title": "Mascot",
+      "description": "Clawd at the foot of the docked pane: he waves while agents run, blinks while the main loop works, and stands still otherwise",
+      "type": "string",
+      "options": [
+        "on",
+        "off"
+      ],
+      "default": "on"
     }
   }
 }

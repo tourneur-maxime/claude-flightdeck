@@ -17,6 +17,8 @@ import {
   applyStep,
   bucketOf,
   cardTitle,
+  CLAWD,
+  CLAWD_COLORS,
   titleLines,
   consultTimeline,
   describeInput,
@@ -58,7 +60,7 @@ import {
   startConsult,
   stepLoop,
 } from './core'
-import type { Config, Panel } from './core'
+import type { ClawdSpan, Config, Panel } from './core'
 
 const PANE = 'flightdeck'
 const TITLE = 'Flightdeck'
@@ -950,7 +952,10 @@ export const register: Register = (on, options) => {
     }
 
     // ---- log: whatever rows the other panels leave, 4 to 8
-    const used = 2 + 5 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 9 : 0) + (lp.length ? 1 : 0) + 3
+    // Clawd stands under the log (not inline, nor in a pane narrower than he can stand in).
+    const showMascot = cfg.mascot && e.props.bodyColumns >= 40
+    const used =
+      2 + 5 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 9 : 0) + (lp.length ? 1 : 0) + 3 + (showMascot ? 3 : 0)
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
@@ -1102,6 +1107,39 @@ export const register: Register = (on, options) => {
       )
     }
 
+    // ---- Clawd: waves while agents run, blinks while the main loop works, still otherwise
+    const clawdSpan = (sp: ClawdSpan) =>
+      sp.on === 'lid' ? (
+        <Text color={CLAWD_COLORS.eyes} backgroundColor={CLAWD_COLORS.body}>
+          {sp.text}
+        </Text>
+      ) : sp.on === 'eyes' ? (
+        <Text color={CLAWD_COLORS.body} backgroundColor={CLAWD_COLORS.eyes}>
+          {sp.text}
+        </Text>
+      ) : (
+        <Text color={CLAWD_COLORS.body}>{sp.text}</Text>
+      )
+    const mascot = showMascot ? (
+      <Box justifyContent="flex-end" width={W}>
+        {motion ? (
+          <els.Client
+            key="clawd"
+            module="./clawd.tsx"
+            width={9}
+            height={3}
+            props={{ mode: running.length > 0 ? 'agents' : m.isRunning ? 'main' : 'rest', poses: CLAWD, body: CLAWD_COLORS.body, eyes: CLAWD_COLORS.eyes }}
+          />
+        ) : (
+          <Box key="clawd" flexDirection="column" width={9} flexShrink={0}>
+            {CLAWD.default.map(row => (
+              <Box>{row.map(clawdSpan)}</Box>
+            ))}
+          </Box>
+        )}
+      </Box>
+    ) : null
+
     const legend = fitLegend(
       [
         { label: 'main', color: C.main },
@@ -1145,6 +1183,7 @@ export const register: Register = (on, options) => {
         </Box>
         {body}
         {svgLanes}
+        {mascot}
       </Box>
     )
   })
