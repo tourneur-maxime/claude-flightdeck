@@ -54,6 +54,7 @@ import {
   recordCheck,
   settleCheck,
   shorten,
+  spineRows,
   startConsult,
   stepLoop,
 } from './core'
@@ -523,7 +524,9 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
-    const hasClient = 'Client' in els
+    // Only the terminal and the desktop draw a Client; elsewhere the table may still carry the
+    // name, but what it draws is an empty box: those surfaces get the still drawing instead.
+    const hasClient = (e.surface === 'terminal' || e.surface === 'desktop') && 'Client' in els
     const [m, u, a, g, cards, lp, lines, t, r, v, now] = await Promise.all([
       getMain($),
       getUsage($),
@@ -771,34 +774,65 @@ export const register: Register = (on, options) => {
         )
       }
       if (useLanes) {
-        // The latest six, then drawn as a tree: each sub-agent under the agent that spawned it.
+        // The latest six, drawn as a tree off one trunk that starts under the header (the main
+        // loop): a branch per agent, each sub-agent under the agent that spawned it.
         const tree = agentTree(cards.slice(-6))
         const shown = tree.map(row => row.card)
         const barW = Math.max(8, w - 28)
         const geo = lanes(shown, now, barW)
+        const earlier = cards.length - shown.length
+        const spine = spineRows([
+          ...(earlier > 0 ? [{ prefix: '│', active: false }] : []),
+          ...tree.map(row => ({ prefix: row.prefix, active: row.card.status === 'running' })),
+        ])
+        // Trunk, then ` ◐ `, then the title: 19 cells on every row, so the time axis starts on the
+        // same cell at any depth. The title gives up what the trunk takes.
+        const titleW = 16 - spine.width
+        const trunk = motion ? (
+          <els.Client
+            key="spine"
+            module="./spine.tsx"
+            width={spine.width}
+            height={spine.rows.length}
+            props={{ rows: spine.rows, color: C.agent, dim: C.dim }}
+          />
+        ) : (
+          <Box flexDirection="column" width={spine.width} flexShrink={0}>
+            {spine.rows.map((row, i) => {
+              const c = shown[i - (earlier > 0 ? 1 : 0)]
+              return <Text color={c ? statusColor(c) : C.faint}>{row.prefix}</Text>
+            })}
+          </Box>
+        )
         return (
           <Box flexDirection="column" width={w}>
             {header}
-            {cards.length > shown.length ? <Text color={C.faint}>{`+${cards.length - shown.length} earlier`}</Text> : null}
-            {tree.map(({ card: c, prefix }, i) => {
-              const gm = geo[i]
-              const isViewed = viewed === c.id
-              // The branch shares the title's 17 cells, so the time axis stays aligned at any depth.
-              const branch = prefix ? `${prefix.slice(-6)} ` : ''
-              return (
-                <Box>
-                  <Text color={statusColor(c)} bold={isViewed}>{`${isViewed ? '▶' : glyph(c)} `}</Text>
-                  <Box width={17}>
-                    {branch ? <Text color={statusColor(c)}>{branch}</Text> : null}
-                    <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={shorten(cardTitle(c), 14 - branch.length)} onPress={expandOnPress(c.id)} />
+            <Box>
+              {trunk}
+              <Box flexDirection="column">
+                {earlier > 0 ? (
+                  <Box paddingLeft={1}>
+                    <Text color={C.faint}>{`+${earlier} earlier`}</Text>
                   </Box>
-                  <Text color={C.faint}>{' ' + '·'.repeat(gm?.before ?? 0)}</Text>
-                  <Text color={statusColor(c)}>{'━'.repeat(gm?.bar ?? 1)}</Text>
-                  <Text color={C.faint}>{'·'.repeat(gm?.after ?? 0) + ' '}</Text>
-                  {clock(`lane-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}
-                </Box>
-              )
-            })}
+                ) : null}
+                {tree.map(({ card: c }, i) => {
+                  const gm = geo[i]
+                  const isViewed = viewed === c.id
+                  return (
+                    <Box>
+                      <Text color={statusColor(c)} bold={isViewed}>{` ${isViewed ? '▶' : glyph(c)} `}</Text>
+                      <Box key={`lane-title-${c.id}`} width={titleW} flexShrink={0}>
+                        <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={shorten(cardTitle(c), titleW - 3)} onPress={expandOnPress(c.id)} />
+                      </Box>
+                      <Text color={C.faint}>{' ' + '·'.repeat(gm?.before ?? 0)}</Text>
+                      <Text color={statusColor(c)}>{'━'.repeat(gm?.bar ?? 1)}</Text>
+                      <Text color={C.faint}>{'·'.repeat(gm?.after ?? 0) + ' '}</Text>
+                      {clock(`lane-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}
+                    </Box>
+                  )
+                })}
+              </Box>
+            </Box>
           </Box>
         )
       }

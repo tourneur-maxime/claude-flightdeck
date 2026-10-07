@@ -29,6 +29,7 @@ import {
   adviceLine,
   receiptOf,
   recordCheck,
+  spineRows,
   redact,
   settleCheck,
   trimRecent,
@@ -198,7 +199,8 @@ test('agents form a tree: children follow their parent, spawn order kept, prefix
   ])
   expect(tree.map(r => r.card.id)).toEqual(['a', 'a1', 'a1x', 'a2', 'a2x', 'b', 'c'])
   expect(tree.map(r => r.depth)).toEqual([0, 1, 2, 1, 2, 0, 0])
-  expect(tree.map(r => r.prefix)).toEqual(['', '├─', '│ └─', '└─', '  └─', '', ''])
+  // The main loop is the root: its children branch off the trunk too, the last one with └─.
+  expect(tree.map(r => r.prefix)).toEqual(['├─', '│ ├─', '│ │ └─', '│ └─', '│   └─', '├─', '└─'])
   expect(tree.map(r => r.parent?.id ?? null)).toEqual([null, 'a', 'a1', 'a', 'a2', null, null])
   expect(agentTree([])).toEqual([])
 })
@@ -206,13 +208,43 @@ test('agents form a tree: children follow their parent, spawn order kept, prefix
 test('an agent whose parent has no card (an architect, an evicted card) is drawn at the top level', () => {
   const tree = agentTree([node('x', 'gone'), node('y'), node('x1', 'x')])
   expect(tree.map(r => [r.card.id, r.depth, r.prefix])).toEqual([
-    ['x', 0, ''],
-    ['x1', 1, '└─'],
-    ['y', 0, ''],
+    ['x', 0, '├─'],
+    ['x1', 1, '│ └─'],
+    ['y', 0, '└─'],
   ])
   // A loop in the links cannot happen, but must not hang or drop a card.
   const loop = agentTree([node('p', 'q'), node('q', 'p'), node('s', 's')])
   expect(loop.map(r => r.card.id).sort()).toEqual(['p', 'q', 's'])
+})
+
+test('the lanes trunk: one column of equal-width rows, cut to 6 cells, lit only on the way to a running agent', () => {
+  const { rows, width } = spineRows([
+    { prefix: '│', active: false }, // the "+N earlier" row: the trunk runs through it
+    { prefix: '├─', active: false },
+    { prefix: '│ └─', active: false },
+    { prefix: '└─', active: false },
+    { prefix: '  └─', active: true },
+  ])
+  expect(width).toBe(4)
+  expect(rows.map(r => r.prefix)).toEqual(['│   ', '├─  ', '│ └─', '└─  ', '  └─'])
+  // Down the trunk (column 0) to the parent's branch, then the running child's own branch.
+  const lit = rows.map(r => r.flow.map(f => (f ? '#' : '.')).join(''))
+  expect(lit).toEqual(['#...', '#...', '#...', '##..', '..##'])
+  // Nothing running: nothing lit.
+  expect(spineRows([{ prefix: '├─', active: false }, { prefix: '└─', active: false }]).rows.every(r => r.flow.every(f => !f))).toBe(true)
+  // The trunk to the parent, the parent's branch, then its own line in column 2; the trunk on to b stays dark.
+  const deep = spineRows([
+    { prefix: '├─', active: false },
+    { prefix: '│ ├─', active: false },
+    { prefix: '│ │ └─', active: false },
+    { prefix: '│ └─', active: true },
+    { prefix: '└─', active: false },
+  ])
+  expect(deep.rows.map(r => r.flow.map(f => (f ? '#' : '.')).join(''))).toEqual(['##....', '..#...', '..#...', '..##..', '......'])
+  // Past 6 cells the trunk and the agent's own branch are kept, the levels between dropped.
+  const cut = spineRows([{ prefix: '│ │ │ └─', active: false }])
+  expect([cut.width, cut.rows[0]?.prefix]).toEqual([6, '│ │ └─'])
+  expect(spineRows([]).width).toBe(0)
 })
 
 test("a card's parent is named from real ids: main, another card, the architect, or an agent with no card", () => {
@@ -227,8 +259,8 @@ test("a card's parent is named from real ids: main, another card, the architect,
 
 // ---------------------------------------------------------------- drawing
 
-const engine = (on: On) => {
-  mock.clock(on)
+const engine = (on: On, now = 0) => {
+  mock.clock(on, { now })
   on('ui.status', () => ({ value: undefined }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
@@ -486,8 +518,11 @@ test('lanes draw the spawn tree: a branch before each sub-agent, its parent in t
   for (const cols of [40, 64, 120]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
     expect(await ui.find({ text: /4 total/ })).toBeDefined()
-    expect(await ui.find({ text: /^└─ $/ })).toBeDefined() // g3 under g1
-    expect(await ui.find({ text: /^ {2}└─ $/ })).toBeDefined() // g4 under g3
+    // One trunk column from the header: every agent branches off it, sub-agents under their parent.
+    const spine = await ui.find({ type: 'Client', key: 'spine' })
+    const rows = (spine?.props.props as { rows: { prefix: string; active: boolean }[] }).rows
+    expect(rows.map(r => r.prefix.trimEnd())).toEqual(['├─', '│ └─', '│   └─', '└─'])
+    expect(await ui.find({ in: 'spine', text: /└─/ })).toBeDefined()
     // Parent first, then its line of descent, then the next top-level agent.
     const titles = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => String(k).startsWith('card-'))
     expect(titles).toEqual(['card-g1', 'card-g3', 'card-g4', 'card-g2'])
@@ -517,4 +552,97 @@ test("cards name a sub-agent's parent; the rail lights only the branches still r
     expect(marks.some(m => m.props.color === 'subtle')).toBe(true) // k2 is done
   }
   await ui.unmount()
+})
+
+type SpineProps = { rows: { prefix: string; active: boolean; flow: boolean[] }[]; color: string; dim: string }
+
+test('lanes hang every agent off one trunk from the header; packets run only to the agent still running', async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `t${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'S1' })
+  for (const d of ['alpha', 'beta', 'gamma', 'delta']) await $.agent.spawn(spawn('Explore', `task ${d}`))
+  for (const id of ['t1', 't3', 't4']) await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 'S1', agentId: id, reason: 'answer' })
+  for (const cols of [40, 64, 120]) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    const spine = await ui.find({ type: 'Client', key: 'spine' })
+    expect(spine).toBeDefined()
+    const props = spine?.props.props as SpineProps
+    expect(props.rows.map(r => r.prefix)).toEqual(['├─', '├─', '├─', '└─'])
+    expect(props.rows.map(r => r.active)).toEqual([false, true, false, false])
+    expect([spine?.props.width, spine?.props.height]).toEqual([2, 4])
+    // Hotkeys follow the rows as drawn.
+    const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('card-'))
+    expect(buttons.map(b => [b.key, b.props.hotkey])).toEqual([
+      ['card-t1', '1'],
+      ['card-t2', '2'],
+      ['card-t3', '3'],
+      ['card-t4', '4'],
+    ])
+    // The axis starts at the same cell on every row: trunk + glyph + title always take 19 cells.
+    const titles = (await ui.findAll({ type: 'Box' })).filter(b => String(b.key).startsWith('lane-title-'))
+    expect(titles.length).toBe(4)
+    for (const t of titles) expect(Number(spine?.props.width) + 3 + Number(t.props.width)).toBe(19)
+    for (const b of buttons) expect(String(b.props.label).length <= 13 - Number(spine?.props.width)).toBe(true)
+    // A packet runs down the trunk to the running agent's branch; the ended branches stay dim.
+    let packets = 0
+    for (let step = 0; step < 8; step += 1) {
+      await ui.advance(130)
+      const lit = await ui.findAll({ in: 'spine', text: /[●•]/ })
+      packets += lit.filter(t => t.props.color === 'suggestion' && t.props.bold === true).length
+    }
+    expect(packets > 0).toBe(true)
+    const drawn = await ui.findAll({ in: 'spine', type: 'Text' })
+    expect(drawn.some(t => t.props.color === 'inactive' && /├─/.test(t.text))).toBe(true)
+    await ui.unmount()
+  }
+})
+
+test('lanes past six agents: the trunk runs through the "+N earlier" row and hotkeys stay 1-6', async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `e${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'E1' })
+  for (let i = 1; i <= 8; i += 1) await $.agent.spawn(spawn('Explore', `job ${i}`))
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ text: /^\+2 earlier$/ })).toBeDefined()
+  const props = (await ui.find({ type: 'Client', key: 'spine' }))?.props.props as SpineProps
+  expect(props.rows.map(r => r.prefix)).toEqual(['│ ', '├─', '├─', '├─', '├─', '├─', '└─'])
+  expect(props.rows.map(r => r.active)).toEqual([false, true, true, true, true, true, true])
+  const keys = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('card-')).map(b => b.props.hotkey)
+  expect(keys).toEqual(['1', '2', '3', '4', '5', '6'])
+  await ui.unmount()
+})
+
+test('without motion or a Client, the trunk is drawn still, each branch in its status colour', { options: { motion: 'off' } }, async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `f${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'F1' })
+  for (const d of ['alpha', 'beta', 'gamma', 'delta']) await $.agent.spawn(spawn('Explore', `task ${d}`))
+  await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 'F1', agentId: 'f1', reason: 'answer' })
+  for (const surface of ['terminal', 'vscode', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...pane(64), surface })
+    expect(await ui.find({ type: 'Client', key: 'spine' })).toBeUndefined()
+    const branches = await ui.findAll({ type: 'Text', text: /^[├└]─$/ })
+    expect(branches.map(b => b.text)).toEqual(['├─', '├─', '├─', '└─'])
+    expect(branches[0]?.props.color).toBe('success') // f1 is done
+    expect(branches[1]?.props.color).toBe('suggestion') // f2 runs
+    await ui.unmount()
+  }
+})
+
+test('VS Code and mobile draw no Client: the trunk and the clocks are drawn still there, motion on', async ($, on) => {
+  engine(on, 65_000) // a real start time, so each lane has a clock to draw
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `v${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'V1' })
+  for (const d of ['alpha', 'beta', 'gamma', 'delta']) await $.agent.spawn(spawn('Explore', `task ${d}`))
+  for (const surface of ['vscode', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...pane(64), surface })
+    expect(await ui.find({ type: 'Client' })).toBeUndefined()
+    expect((await ui.findAll({ type: 'Text', text: /^[├└]─$/ })).length).toBe(4)
+    expect((await ui.findAll({ type: 'Text', text: /^\d+:\d\d$/ })).length).toBe(5) // one per lane, and the turn's
+    await ui.unmount()
+  }
 })

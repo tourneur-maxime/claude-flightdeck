@@ -454,9 +454,10 @@ export type TreeRow = { card: AgentCard; depth: number; prefix: string; parent: 
 
 /**
  * Cards as a tree: each child right after its parent and the parent's earlier children, spawn
- * order kept among siblings. `prefix` is the branch drawn before the title (`├─`, `└─`, under
- * `│ ` or `  ` for each level above). A card whose parent has no card here (an architect, a card
- * evicted or not shown) is drawn at the top level, as the main loop's children are.
+ * order kept among siblings. The main loop is the root: `prefix` is the branch drawn before the
+ * title, `├─` or, for the last child of its parent, `└─`, under `│ ` or `  ` for each level
+ * above, the main loop's level included. A card whose parent has no card here (an architect, a
+ * card evicted or not shown) is drawn at the top level, as the main loop's children are.
  */
 export const agentTree = (cards: AgentCard[]): TreeRow[] => {
   const byId = new Map<string, AgentCard>()
@@ -466,20 +467,75 @@ export const agentTree = (cards: AgentCard[]): TreeRow[] => {
     const key = c.parentId !== null && c.parentId !== c.id && byId.has(c.parentId) ? c.parentId : null
     kids.set(key, [...(kids.get(key) ?? []), c])
   }
-  const out: TreeRow[] = []
+  // First the shape (who sits under whom), then the drawing: a branch needs to know it is the last.
+  type Node = { card: AgentCard; parent: AgentCard | null; below: Node[] }
   const seen = new Set<AgentCard>()
-  const walk = (c: AgentCard, depth: number, lead: string, isLast: boolean, parent: AgentCard | null) => {
-    if (seen.has(c)) return
+  const grow = (c: AgentCard, parent: AgentCard | null): Node => {
     seen.add(c)
-    out.push({ card: c, depth, prefix: depth === 0 ? '' : `${lead}${isLast ? '└─' : '├─'}`, parent })
-    const next = depth === 0 ? '' : `${lead}${isLast ? '  ' : '│ '}`
-    const below = (kids.get(c.id) ?? []).filter(k => !seen.has(k))
-    below.forEach((k, i) => walk(k, depth + 1, next, i === below.length - 1, c))
+    const below: Node[] = []
+    for (const k of kids.get(c.id) ?? []) if (!seen.has(k)) below.push(grow(k, c))
+    return { card: c, parent, below }
   }
-  for (const c of kids.get(null) ?? []) walk(c, 0, '', false, null)
+  const roots: Node[] = []
+  for (const c of kids.get(null) ?? []) if (!seen.has(c)) roots.push(grow(c, null))
   // Only a loop in the links (which spawning cannot make) leaves cards unreached: draw them at the top.
-  for (const c of cards) walk(c, 0, '', false, null)
+  for (const c of cards) if (!seen.has(c)) roots.push(grow(c, null))
+  const out: TreeRow[] = []
+  const draw = (n: Node, depth: number, lead: string, isLast: boolean) => {
+    out.push({ card: n.card, depth, prefix: `${lead}${isLast ? '└─' : '├─'}`, parent: n.parent })
+    n.below.forEach((k, i) => draw(k, depth + 1, `${lead}${isLast ? '  ' : '│ '}`, i === n.below.length - 1))
+  }
+  roots.forEach((r, i) => draw(r, 0, '', i === roots.length - 1))
   return out
+}
+
+/** One row of the lanes' trunk column: its branch glyphs, and which of its cells lead to a running agent. */
+export type SpineRow = { prefix: string; active: boolean; flow: boolean[] }
+
+/** The trunk column's widest branch: the trunk, one level and the agent's own branch. */
+export const SPINE_MAX = 6
+
+/**
+ * The lanes' trunk column, one row per line beside it: every prefix cut to `SPINE_MAX` cells
+ * (keeping the trunk and the agent's own branch, dropping the levels between) and padded to one
+ * width, so the axis beside it starts on the same cell on every row. `flow` marks the cells on the
+ * way from the header to each running agent: up its own branch, then each ancestor's line and
+ * branch, to the trunk. A row with no branch of its own (the "+N earlier" line) only carries the trunk.
+ */
+export const spineRows = (input: { prefix: string; active: boolean }[]): { rows: SpineRow[]; width: number } => {
+  const cut = input.map(r => (r.prefix.length > SPINE_MAX ? r.prefix.slice(0, SPINE_MAX - 2) + r.prefix.slice(-2) : r.prefix))
+  const width = Math.max(0, ...cut.map(p => p.length))
+  const cells = cut.map(p => Array.from(p.padEnd(width)))
+  const flow = cells.map(row => row.map(() => false))
+  const at = (r: number, x: number) => cells[r]?.[x] ?? ' '
+  const mark = (r: number, x: number) => {
+    const row = flow[r]
+    if (row && at(r, x) !== ' ') row[x] = true
+  }
+  input.forEach((r, i) => {
+    if (!r.active) return
+    const line = cells[i] ?? []
+    const conn = Math.max(line.lastIndexOf('├'), line.lastIndexOf('└'))
+    if (conn < 0) return
+    for (let x = conn; x < width; x += 1) mark(i, x)
+    let x = conn
+    let row = i - 1
+    while (row >= 0 && x >= 0) {
+      const ch = at(row, x)
+      if (ch === '│' || ch === '├' || ch === '└') {
+        mark(row, x)
+        row -= 1
+        continue
+      }
+      // The parent's row: its branch sits one level to the left; climb on from its connector.
+      x -= 2
+      if (x < 0) break
+      mark(row, x)
+      mark(row, x + 1)
+      row -= 1
+    }
+  })
+  return { rows: cut.map((p, i) => ({ prefix: p.padEnd(width), active: input[i]?.active ?? false, flow: flow[i] ?? [] })), width }
 }
 
 /** Who spawned a card, by its real parent id: `main`, the parent card's title, the architect, or `agent`. */
