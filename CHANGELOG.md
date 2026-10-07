@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1
+
+- The agents section sits in a round frame in the agents colour, like the other panels, and its title takes that colour too. Cards, rails and lanes are laid out inside it, 4 cells narrower: three cards now need a 66-column pane (62 before), and the lanes' time axis gives up those 4 cells while the 19 cells before it stay put. The expanded card stays below the frame, and the log gives up the frame's 2 rows.
+- Clawd stands centred at the foot of the pane instead of on the right.
+- New `cost` option (`on`/`off`, default `off`): off, the pane draws no dollar amount, neither the session's cost (main panel, inline summary) nor the turn's (receipt). The figures are still tracked.
+- 45 tests.
+
 ## 0.5.0
 
 - Swimlanes hang off one trunk that starts under the agents header: every agent gets a branch (`├─`, the last one `└─`), main's own agents included, so a session that spawns many agents from the main loop now shows the flow too. Packets run down the trunk and out along each running agent's branch; ended branches stay dim. One `Client` draws the whole column; without motion, or on VS Code and mobile, the same glyphs are drawn still in each agent's status colour. No row is added and the time axis stays aligned at 40, 64 and 120 columns.
