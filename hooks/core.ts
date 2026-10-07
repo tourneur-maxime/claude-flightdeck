@@ -438,6 +438,14 @@ export const lanes = (cards: AgentCard[], now: number, width: number) => {
 /** How many log lines fit: what the other panels leave, never fewer than 4 nor more than 8. */
 export const logRows = (bodyRows: number, used: number) => Math.max(4, Math.min(8, bodyRows - used - 3))
 
+/**
+ * Rows above Clawd that centre him (3 rows) in what a docked pane of `bodyRows` leaves under
+ * `usedAbove`. One row is kept spare so an estimate up to 2 rows short never pushes him past the
+ * pane; with no room for that, 0.
+ */
+export const clawdPad = (bodyRows: number, usedAbove: number, spare = 1) =>
+  Math.max(0, Math.floor((bodyRows - Math.max(0, usedAbove) - spare - 3) / 2))
+
 /** Legend items that fit on one row of `width` cells, in order; the rest are dropped. */
 export const fitLegend = <T extends { label: string }>(items: T[], width: number) => {
   const out: T[] = []

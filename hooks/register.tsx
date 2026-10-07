@@ -19,6 +19,7 @@ import {
   cardTitle,
   CLAWD,
   CLAWD_COLORS,
+  clawdPad,
   titleLines,
   consultTimeline,
   describeInput,
@@ -1124,8 +1125,25 @@ export const register: Register = (on, options) => {
       ) : (
         <Text color={CLAWD_COLORS.body}>{sp.text}</Text>
       )
+    // Docked, the pane has bodyRows whatever its tree: Clawd stands centred in the rows the panels
+    // leave. That is `used` counted only for the panels actually drawn (it charges gate, agents and
+    // receipt even when they are hidden), less Clawd's own 3, plus the log as drawn: its frame and
+    // title (3) and the lines it has, not the rows it may take. Wide, the two columns are counted
+    // end to end, so he sits a little high there. Inline the frame fits the tree: no padding; nor
+    // where an SVG time axis of unknown rows is drawn.
+    const has = (p: Panel) => panels.includes(p)
+    const drawnAbove =
+      2 +
+      (has('main') ? 5 : 0) +
+      (has('architect') ? 6 : 0) +
+      (has('gate') ? 6 + (v.gateOpen ? 5 : 0) : 0) +
+      (has('agents') ? (cards.length > cfg.maxCards ? 5 + Math.min(6, cards.length) : 10) + (expandedCard ? 9 : 0) : 0) +
+      (has('loops') ? 1 : 0) +
+      (has('receipt') ? 3 : 0) +
+      (has('log') ? 3 + Math.max(1, shownLines.length) : 0)
+    const pad = e.props.placement === 'dock' && svgLanes === null ? clawdPad(bodyRows, drawnAbove) : 0
     const mascot = showMascot ? (
-      <Box justifyContent="center" width={W}>
+      <Box justifyContent="center" width={W} marginTop={pad}>
         {motion ? (
           <els.Client
             key="clawd"

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2
+
+- Docked, Clawd stands centred in the rows left between the log and the foot of the pane instead of right under the log. Those rows are counted from the panels actually drawn and the log's lines as shown, one row kept spare so he never pushes the pane past its height; with no room to spare he stays under the log. Inline, the frame fits the tree and he stays under the log. The log's own rows are unchanged.
+- 55 tests.
+
 ## 0.5.1
 
 - The agents section sits in a round frame in the agents colour, like the other panels, and its title takes that colour too. Cards, rails and lanes are laid out inside it, 4 cells narrower: three cards now need a 66-column pane (62 before), and the lanes' time axis gives up those 4 cells while the 19 cells before it stay put. The expanded card stays below the frame, and the log gives up the frame's 2 rows.

@@ -69,7 +69,7 @@ https://github.com/user-attachments/assets/9ad0fcc3-c81c-427a-a743-f7b6c49f5885
 
 Connectors animate only while work flows: a turn is running, an agent is running, or a consult is open. On the agents' rails and the lanes' trunk each branch flows while its own agent runs and goes dim when it ends. Panels with nothing to show take no room, so a session without subagents shows just the main box and the log.
 
-At the foot of the docked pane stands Clawd, Claude Code's own mascot, in his own colours: he waves while an agent runs, blinks now and then while the main loop works, and stands still otherwise. He is not drawn in the inline summary, nor in a pane narrower than 40 columns; `mascot: off` leaves him out.
+Clawd, Claude Code's own mascot, stands at the foot of the pane in his own colours, centred in the room left below the log when docked: he waves while an agent runs, blinks now and then while the main loop works, and stands still otherwise. He is not drawn in the inline summary, nor in a pane narrower than 40 columns; `mascot: off` leaves him out.
 
 ## Use
 
@@ -163,7 +163,7 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 | [`hooks/core.ts`](hooks/core.ts) | every reducer, formatter and layout rule as pure functions, so behaviour is testable directly |
 | [`hooks/rail.tsx`](hooks/rail.tsx), [`hooks/spine.tsx`](hooks/spine.tsx), [`hooks/elapsed.tsx`](hooks/elapsed.tsx), [`hooks/clawd.tsx`](hooks/clawd.tsx) | surface modules: animated connectors, the lanes' trunk, live clocks and Clawd, each redrawing only itself on the surface's own frame clock |
 | [`types/index.d.ts`](types/index.d.ts) | the state contract |
-| [`tests/`](tests) | 47 tests: pure behaviour, plus drawings mounted on every surface at 40–120 columns |
+| [`tests/`](tests) | 55 tests: pure behaviour, plus drawings mounted on every surface at 40–120 columns |
 
 State lives in `$.state` atoms. Every read is merged over defaults, so a missing or older field never breaks the pane; an update that changes the state's shape may still reset its counters once. New to mods? Start with [Claude Code mods](https://claude.com/blog/claude-code-mods) and [Getting started with Claude Code mods](https://claude.dev/blog/getting-started-with-claude-code-mods/).
 
