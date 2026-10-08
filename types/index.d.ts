@@ -103,7 +103,37 @@ export type Receipt = {
 
 export type Layout = 'auto' | 'compact' | 'wide' | 'mini'
 
+/** expanded: the agent whose summary the agent pane shows above its conversation (the `i` key). */
 export type View = { expanded: string | null; gateOpen: Bucket | null; layout: Layout | null }
+
+/** One tool call of an agent's conversation, as the agent pane draws it; redacted. */
+export type FeedTool = {
+  /** `Bash → git status`: describeInput's line. */
+  text: string
+  isError: boolean
+  /** The result's first lines (at most 3), each cut; empty while the call runs. */
+  result: string[]
+  /** Lines of the result not kept. */
+  more: number
+  /** No result yet. */
+  isPending: boolean
+}
+
+/** One message of an agent's conversation; redacted, cut to a size. */
+export type FeedEntry = { role: 'user' | 'assistant'; text: string; tools: FeedTool[] }
+
+/** The conversation the agent pane shows: read in hooks (never while drawing), its end kept within a budget. */
+export type AgentFeed = {
+  agentId: string
+  entries: FeedEntry[]
+  /** Messages before the first entry kept, left out by the budget. */
+  omitted: number
+  readAt: number
+  /** session: `$.session.messages`; transcript: the agent's saved JSONL, read when the session no longer serves it. */
+  source: 'session' | 'transcript'
+  /** Why nothing could be read: the session's refusal, then the transcript's; null once read. */
+  deny: string | null
+}
 
 export type Roster = { architectTypes: string[] }
 
@@ -124,6 +154,8 @@ declare module 'claude-code' {
       roster: Roster
       /** Context windows by model id (lower case), learnt from the main loop's measurements. */
       windows: Record<string, number>
+      /** The conversation in the agent pane, or null when it is closed. */
+      agentFeed: AgentFeed | null
     }
   }
 }

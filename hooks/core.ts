@@ -3,9 +3,12 @@
 // permission check inside a call; these functions are what the hooks apply).
 import type {
   AgentCard,
+  AgentFeed,
   Architect,
   Bucket,
   Check,
+  FeedEntry,
+  FeedTool,
   Gate,
   Layout,
   LogLine,
@@ -891,3 +894,185 @@ export const verdictOf = (answer: string): ReviewVerdict | null => {
 }
 
 export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.spawnedAt
+
+// ---------------------------------------------------------------- the agent pane: one agent's conversation
+
+/** A tool call as `$.session.messages` reports it (ToolUseSummary), or as a saved transcript rebuilds it. */
+export type ToolUseLike = { tool: string; input?: unknown; text?: string; isError?: boolean }
+
+/** A message as `$.session.messages` reports it (SessionMessage), or as a saved transcript rebuilds it. */
+export type MessageLike = { role: 'user' | 'assistant'; text: string; toolUses?: readonly ToolUseLike[] }
+
+/** What the pane keeps of a conversation: its end, at most this many messages and characters. */
+export type FeedBudget = { entries: number; chars: number }
+export const FEED_BUDGET: FeedBudget = { entries: 400, chars: 60_000 }
+/** One message's text past this is cut, so one long prompt cannot take the whole budget. */
+export const FEED_TEXT_MAX = 6_000
+/** A result's lines shown under its call, each cut to FEED_LINE_MAX characters. */
+export const FEED_RESULT_LINES = 3
+export const FEED_LINE_MAX = 300
+/** The least time between two reads of the conversation while the agent runs. */
+export const FEED_DEBOUNCE_MS = 1_000
+/** A transcript file over this is not read: `$.fs.read` rejects past 4 MiB. */
+export const TRANSCRIPT_MAX_BYTES = 4 * 1024 * 1024
+
+const clip = (s: string, n: number) => {
+  const cps = [...s]
+  return cps.length > n ? `${cps.slice(0, n).join('').trimEnd()}… (+${cps.length - n} chars)` : s
+}
+
+const feedTool = (u: ToolUseLike): FeedTool => {
+  const isPending = u.text === undefined && u.isError !== true
+  const lines = isPending
+    ? []
+    : redact(u.text ?? '')
+        .split(/\r?\n/)
+        .map(l => l.replace(/\t/g, '  ').trimEnd())
+        .filter(l => l.trim() !== '')
+  return {
+    text: shorten(describeInput(u.tool, u.input), FEED_LINE_MAX),
+    isError: u.isError === true,
+    result: lines.slice(0, FEED_RESULT_LINES).map(l => clip(l, FEED_LINE_MAX)),
+    more: Math.max(0, lines.length - FEED_RESULT_LINES),
+    isPending,
+  }
+}
+
+const entrySize = (e: FeedEntry) => 20 + e.text.length + e.tools.reduce((n, t) => n + 10 + t.text.length + t.result.reduce((m, l) => m + l.length + 1, 0), 0)
+
+/**
+ * An agent's conversation as the pane draws it: each message's role, its text and its tool calls
+ * with the start of their results, every string redacted and cut. Rows holding only tool results
+ * fold into the calls they answer; only the end is kept, within the budget, and `omitted` counts
+ * the messages before it. Nothing here depends on the pane's width.
+ */
+export const feedOf = (messages: readonly MessageLike[], budget: FeedBudget = FEED_BUDGET): { entries: FeedEntry[]; omitted: number } => {
+  const all: FeedEntry[] = []
+  for (const m of messages) {
+    const text = clip(redact((m.text ?? '').trim()), FEED_TEXT_MAX)
+    const tools = (m.toolUses ?? []).map(feedTool)
+    if (text === '' && tools.length === 0) continue
+    all.push({ role: m.role === 'assistant' ? 'assistant' : 'user', text, tools })
+  }
+  let chars = 0
+  let start = all.length
+  while (start > 0 && all.length - start < budget.entries) {
+    const size = entrySize(all[start - 1] as FeedEntry)
+    if (start < all.length && chars + size > budget.chars) break
+    chars += size
+    start -= 1
+  }
+  return { entries: all.slice(start), omitted: start }
+}
+
+type Block = { type?: unknown; text?: unknown; id?: unknown; name?: unknown; input?: unknown; tool_use_id?: unknown; content?: unknown; is_error?: unknown }
+
+const blocksOf = (content: unknown): Block[] =>
+  typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content.filter(isObject) : []
+
+const resultText = (content: unknown) =>
+  blocksOf(content)
+    .filter(b => b.type === 'text' && typeof b.text === 'string')
+    .map(b => b.text as string)
+    .join('\n')
+
+/**
+ * A saved subagent transcript (JSONL: one `{ type, message: { content } }` per line) read back as
+ * `$.session.messages` would report it: an assistant message's blocks (saved one per line under
+ * one message id) joined, thinking left out, each tool result paired with its call by id. A line
+ * that does not parse, a meta row and any other kind of row are skipped.
+ */
+export const jsonlMessages = (text: string): MessageLike[] => {
+  type Use = { tool: string; input: unknown; text?: string; isError?: boolean }
+  const out: { role: 'user' | 'assistant'; text: string; toolUses: Use[] }[] = []
+  const calls = new Map<string, Use>()
+  let lastId: unknown = null
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    let row: unknown
+    try {
+      row = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (!isObject(row) || (row.type !== 'user' && row.type !== 'assistant') || row.isMeta === true) continue
+    const message = isObject(row.message) ? row.message : {}
+    const blocks = blocksOf(message.content)
+    if (row.type === 'assistant') {
+      const prev = out[out.length - 1]
+      const id = message.id ?? null
+      const m = prev && prev.role === 'assistant' && id !== null && id === lastId ? prev : { role: 'assistant' as const, text: '', toolUses: [] }
+      if (m !== prev) out.push(m)
+      for (const b of blocks) {
+        if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) m.text = m.text ? `${m.text}\n${b.text}` : b.text
+        else if (b.type === 'tool_use') {
+          const use: Use = { tool: typeof b.name === 'string' ? b.name : 'tool', input: b.input }
+          if (typeof b.id === 'string') calls.set(b.id, use)
+          m.toolUses.push(use)
+        }
+      }
+      lastId = id
+    } else {
+      lastId = null
+      const texts: string[] = []
+      for (const b of blocks) {
+        if (b.type === 'text' && typeof b.text === 'string') texts.push(b.text)
+        else if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+          const use = calls.get(b.tool_use_id)
+          if (!use) continue
+          use.text = resultText(b.content)
+          if (b.is_error === true) use.isError = true
+        }
+      }
+      out.push({ role: 'user', text: texts.join('\n'), toolUses: [] })
+    }
+  }
+  return out
+}
+
+/**
+ * Where an agent's saved transcript is: the path its `SubagentStop` named, else beside the main
+ * transcript (`<session>.jsonl` → `<session>/subagents/agent-<id>.jsonl`), else rebuilt from the
+ * config directory, the working directory (every character but a letter or digit made `-`) and the
+ * session id, a layout no API documents. Null when none of these is known, or for an id that is
+ * not a plain name.
+ */
+export const transcriptPath = (o: {
+  agentId: string
+  known?: string | null
+  mainTranscript?: string | null
+  configDir?: string
+  home?: string
+  cwd?: string
+  sessionId?: string
+}): string | null => {
+  if (o.known) return o.known
+  if (!/^[A-Za-z0-9_-]+$/.test(o.agentId)) return null
+  const file = `subagents/agent-${o.agentId}.jsonl`
+  if (o.mainTranscript && /\.jsonl$/.test(o.mainTranscript)) return `${o.mainTranscript.replace(/\.jsonl$/, '')}/${file}`
+  const base = o.configDir ? o.configDir.replace(/[\\/]+$/, '') : o.home ? `${o.home.replace(/[\\/]+$/, '')}/.claude` : ''
+  if (!base || !o.cwd || !o.sessionId || !/^[A-Za-z0-9_-]+$/.test(o.sessionId)) return null
+  return `${base}/projects/${o.cwd.replace(/[^A-Za-z0-9]/g, '-')}/${o.sessionId}/${file}`
+}
+
+/** A window over a tree that shows its last row: where the person left the agent pane to keep following. */
+export const isAtEnd = (w: { offset: number; bodyRows: number; contentRows: number }) => w.offset + w.bodyRows >= w.contentRows
+
+/** A stored feed, or null when what is stored is not one. */
+export const normalizeFeed = (stored: unknown): AgentFeed | null => {
+  if (!isObject(stored) || typeof stored.agentId !== 'string' || !stored.agentId) return null
+  return {
+    agentId: stored.agentId,
+    entries: listOf<FeedEntry>(stored.entries),
+    omitted: typeof stored.omitted === 'number' && stored.omitted > 0 ? stored.omitted : 0,
+    readAt: typeof stored.readAt === 'number' ? stored.readAt : 0,
+    source: stored.source === 'transcript' ? 'transcript' : 'session',
+    deny: typeof stored.deny === 'string' ? stored.deny : null,
+  }
+}
+
+/** A pane title the engine takes: no control characters, cut in cells. */
+export const agentPaneTitle = (title: string) => `Agent · ${shortenCells(title.replace(/[\u0000-\u001f\u007f]/g, ' '), 32) || 'agent'}`
+
+/** `1.5 MiB`, `512 KiB`. */
+export const fmtBytes = (n: number) => (n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)} MiB` : `${Math.max(1, Math.round(n / 1024))} KiB`)

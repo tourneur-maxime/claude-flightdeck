@@ -7,6 +7,7 @@ import {
   DEFAULT_GATE,
   DEFAULT_TURN,
   afterCall,
+  agentPaneTitle,
   agentTree,
   agentsRows,
   applyStep,
@@ -19,15 +20,20 @@ import {
   consultTimeline,
   describeInput,
   endConsult,
+  feedOf,
+  FEED_BUDGET,
   fitLegend,
   gateSummary,
   limitLabel,
   logRows,
+  isAtEnd,
   isFlashing,
+  jsonlMessages,
   messageExcerpt,
   momentOf,
   noteMessage,
   normalizeCard,
+  normalizeFeed,
   parentLabel,
   normalizeGate,
   normalizeLog,
@@ -52,6 +58,7 @@ import {
   startConsult,
   taskIdOf,
   timeBars,
+  transcriptPath,
   verdictOf,
   windowFor,
 } from '../hooks/core'
@@ -1439,4 +1446,102 @@ test("a window is learnt only from a measurement: main measured on X, then a ste
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(textOf(await ui.find({ key: 'card-stats-wy1' }))).toBe('ctx ▰▰▰▱▱▱▱▱ 38%~ · out 100 · 1 step')
   await ui.unmount()
+})
+
+// ---------------------------------------------------------------- the agent pane
+
+const conversation = [
+  { role: 'user' as const, text: 'Check the repository state', toolUses: [] },
+  {
+    role: 'assistant' as const,
+    text: 'Looking at the tree first.\nThen the config, with token=abc123def456 in it.',
+    toolUses: [
+      { tool_use_id: 't1', tool: 'Bash', input: { command: 'cd /repo && git status' }, text: 'On branch main\nChanges not staged:\n  modified: a.ts\n  modified: b.ts\n  modified: c.ts\n\n  modified: d.ts' },
+      { tool_use_id: 't2', tool: 'Read', input: { file_path: '/repo/src/missing.ts' }, text: 'File does not exist.', isError: true as const },
+    ],
+  },
+  // The row holding the results folds into the calls it answers.
+  { role: 'user' as const, text: '', toolUses: [], toolResults: [{ tool_use_id: 't1', text: 'On branch main', isError: false }] },
+]
+
+test("an agent's conversation, ready to draw: roles, each call on a line, the start of its result, errors, secrets masked", () => {
+  const { entries, omitted } = feedOf(conversation)
+  expect(omitted).toBe(0)
+  expect(entries.map(e => e.role)).toEqual(['user', 'assistant'])
+  const said = entries[1]
+  expect(said?.text).toContain('token=•••')
+  expect(said?.text).not.toContain('abc123')
+  expect(said?.tools.map(t => t.text)).toEqual(['Bash → cd /repo && git status', 'Read → src/missing.ts'])
+  expect(said?.tools[0]).toEqual({ text: 'Bash → cd /repo && git status', isError: false, result: ['On branch main', 'Changes not staged:', '  modified: a.ts'], more: 3, isPending: false })
+  expect(said?.tools[1]).toMatchObject({ isError: true, result: ['File does not exist.'], more: 0 })
+  // A call still running has no result yet; a secret in its input is masked too.
+  const running = feedOf([{ role: 'assistant', text: '', toolUses: [{ tool: 'Bash', input: { command: 'curl -H "Authorization: Bearer abcdefgh12345678" x' } }] }])
+  expect(running.entries[0]?.tools[0]).toMatchObject({ isPending: true, result: [], more: 0 })
+  expect(running.entries[0]?.tools[0]?.text).not.toContain('abcdefgh')
+  // A thinking-only or empty row is no message.
+  expect(feedOf([{ role: 'assistant', text: '  ', toolUses: [] }]).entries).toEqual([])
+})
+
+test("only the conversation's end is kept, within 400 messages and 60 000 characters; one long message is cut", () => {
+  const many = Array.from({ length: 450 }, (_, i) => ({ role: (i % 2 ? 'assistant' : 'user') as 'user' | 'assistant', text: `message ${i}`, toolUses: [] }))
+  const kept = feedOf(many)
+  expect([kept.entries.length, kept.omitted]).toEqual([FEED_BUDGET.entries, 50])
+  expect(kept.entries.at(-1)?.text).toBe('message 449')
+  const big = Array.from({ length: 30 }, (_, i) => ({ role: 'assistant' as const, text: `${i} ${'x'.repeat(5_000)}`, toolUses: [] }))
+  const cut = feedOf(big)
+  expect(cut.entries.length < 30).toBe(true)
+  expect(cut.omitted).toBe(30 - cut.entries.length)
+  expect(cut.entries.reduce((n, e) => n + e.text.length, 0) <= FEED_BUDGET.chars).toBe(true)
+  const one = feedOf([{ role: 'user', text: 'y'.repeat(10_000), toolUses: [] }])
+  expect(one.entries[0]?.text).toMatch(/… \(\+4000 chars\)$/)
+  // The newest message is kept whatever its size.
+  expect(feedOf([{ role: 'user', text: 'z'.repeat(500), toolUses: [] }], { entries: 400, chars: 10 }).entries.length).toBe(1)
+})
+
+const jsonl = [
+  { type: 'user', message: { role: 'user', content: 'Check the repository state' } },
+  { type: 'assistant', message: { id: 'm1', content: [{ type: 'thinking', thinking: 'hmm' }] } },
+  { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'Looking at the tree, password=hunter2.' }] } },
+  { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git status' } }] } },
+  { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't2', name: 'Read', input: { file_path: '/repo/x.ts' } }] } },
+  { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'On branch main\nclean', is_error: false }] } },
+  { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't2', content: [{ type: 'text', text: 'No such file' }], is_error: true }] } },
+  { type: 'attachment', attachment: { type: 'skill_listing' } },
+  { type: 'assistant', message: { id: 'm2', content: [{ type: 'text', text: 'Done.' }] } },
+]
+  .map(row => JSON.stringify(row))
+  .join('\n')
+
+test("a saved transcript reads back as the session reports a conversation: blocks joined per message, results paired, thinking left out", () => {
+  const messages = jsonlMessages(`${jsonl}\n{not json\n`)
+  expect(messages.map(m => [m.role, m.text])).toEqual([
+    ['user', 'Check the repository state'],
+    ['assistant', 'Looking at the tree, password=hunter2.'],
+    ['user', ''],
+    ['user', ''],
+    ['assistant', 'Done.'],
+  ])
+  const { entries } = feedOf(messages)
+  expect(entries.map(e => e.role)).toEqual(['user', 'assistant', 'assistant'])
+  expect(entries[1]?.text).toBe('Looking at the tree, password=•••')
+  expect(entries[1]?.tools.map(t => [t.text, t.isError, t.result.join('|')])).toEqual([
+    ['Bash → git status', false, 'On branch main|clean'],
+    ['Read → repo/x.ts', true, 'No such file'],
+  ])
+})
+
+test("a subagent's transcript path: the one SubagentStop named, else beside the main transcript, else rebuilt; never from an odd id", () => {
+  expect(transcriptPath({ agentId: 'a1', known: '/t/agent-a1.jsonl', mainTranscript: '/p/s.jsonl' })).toBe('/t/agent-a1.jsonl')
+  expect(transcriptPath({ agentId: 'a1', mainTranscript: '/home/me/.claude/projects/-x/s1.jsonl' })).toBe('/home/me/.claude/projects/-x/s1/subagents/agent-a1.jsonl')
+  expect(transcriptPath({ agentId: 'a1', home: '/Users/me/', cwd: '/Users/me/dev/my.app', sessionId: 's1' })).toBe('/Users/me/.claude/projects/-Users-me-dev-my-app/s1/subagents/agent-a1.jsonl')
+  expect(transcriptPath({ agentId: 'a1', configDir: '/cfg', home: '/Users/me', cwd: '/w', sessionId: 's1' })).toBe('/cfg/projects/-w/s1/subagents/agent-a1.jsonl')
+  expect(transcriptPath({ agentId: 'a1', cwd: '/w', sessionId: 's1' })).toBeNull()
+  expect(transcriptPath({ agentId: '../../etc', mainTranscript: '/p/s.jsonl' })).toBeNull()
+  expect(normalizeFeed({ agentId: 'a1', entries: 'x', source: 'other' })).toEqual({ agentId: 'a1', entries: [], omitted: 0, readAt: 0, source: 'session', deny: null })
+  expect(normalizeFeed(null)).toBeNull()
+  expect(agentPaneTitle('Fix\nthe\tparser')).toBe('Agent · Fix the parser')
+  // The person's scroll keeps the pane following only when it leaves the last row in view.
+  expect(isAtEnd({ offset: 40, bodyRows: 20, contentRows: 60 })).toBe(true)
+  expect(isAtEnd({ offset: 3, bodyRows: 20, contentRows: 60 })).toBe(false)
+  expect(isAtEnd({ offset: 0, bodyRows: 20, contentRows: 12 })).toBe(true)
 })
