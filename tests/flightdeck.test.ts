@@ -13,6 +13,7 @@ import {
   cardKind,
   cardSpine,
   cardStats,
+  cellWidth,
   consultTimeline,
   describeInput,
   endConsult,
@@ -36,6 +37,7 @@ import {
   CLAWD,
   redact,
   settleCheck,
+  shortenCells,
   trimRecent,
   startConsult,
   timeBars,
@@ -285,6 +287,23 @@ test('the cards trunk: 6 rows a card by default, the trunk alone for top-level c
   expect([deep.width, ...deep.rows.map(r => r.prefix)]).toEqual([6, '└─┬───', '  └─┬─', '    ├─', '    └─'])
   expect(lit(deep.rows)).toEqual(['###...', '..###.', '....#.', '....##'])
   expect(cardSpine([])).toEqual({ rows: [], width: 0 })
+})
+
+test('text is measured in terminal cells: wide CJK and emoji take 2, combining marks 0; cut by whole code point', () => {
+  expect([cellWidth('abc'), cellWidth('日本'), cellWidth('✅'), cellWidth('é'), cellWidth('e\u0301'), cellWidth('🚀'), cellWidth('❤\uFE0F'), cellWidth('')]).toEqual([3, 4, 2, 1, 1, 2, 1, 0])
+  expect(shortenCells('Short', 10)).toBe('Short')
+  expect(shortenCells('  two   words ', 20)).toBe('two words')
+  expect(shortenCells('日本語のテスト', 7)).toBe('日本語…') // 6 cells, then the ellipsis
+  expect(shortenCells('🚀🚀🚀🚀', 5)).toBe('🚀🚀…')
+  expect(shortenCells('ab🚀cd', 3)).toBe('ab…') // never half a surrogate pair
+  expect(shortenCells('abcdef', 0)).toBe('')
+  for (const s of ['🚀 deploy 🚀🚀 the 世界 build ✅✅', '並列エージェントのテストを書く']) {
+    for (let n = 1; n <= 30; n += 1) {
+      const cut = shortenCells(s, n)
+      expect(cellWidth(cut) <= n).toBe(true)
+      expect(cut.includes('\uFFFD') || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(cut)).toBe(false)
+    }
+  }
 })
 
 test("a card's rows: the model in short, the parent when it fits, the tokens and steps", () => {
@@ -701,6 +720,31 @@ test('every card hangs off one trunk from the header; a comet runs down it only 
     expect([heads > 0, outward > 0, trails > 0]).toEqual([true, true, true])
     const drawn = await ui.findAll({ in: 'spine', type: 'Text' })
     expect(drawn.some(t => t.props.color === 'inactive' && /├─/.test(t.text))).toBe(true)
+    await ui.unmount()
+  }
+})
+
+test('a wide title (CJK, emoji) stays on one row of its card, cut in cells, never mid code point', async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `wd${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'WD1' })
+  await $.agent.spawn(spawn('general-purpose', '並列エージェントのテストを書いてパーサーの境界を確認する'))
+  await $.agent.spawn(spawn('一般エージェント', '🚀 ship the parser 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀 ✅', 'wd1'))
+  for (const cols of [40, 64]) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    for (const id of ['wd1', 'wd2']) {
+      const card = await ui.find({ key: `agent-${id}` })
+      const cw = Number(card?.props.width) - 4
+      // The title's row: one row high, as wide as the card's inside, clipping what overflows.
+      const row = (card?.children ?? []).filter(Boolean)[0] as { props?: Record<string, unknown> } | undefined
+      expect([row?.props?.width, row?.props?.height, row?.props?.overflow]).toEqual([cw, 1, 'hidden'])
+      const label = String((await ui.find({ key: `card-${id}` }))?.props.label)
+      expect(3 + cellWidth(label) <= cw).toBe(true) // `1: ` and the title
+      expect(label.endsWith('…')).toBe(true)
+      expect(/\uFFFD|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(label)).toBe(false)
+      expect(cellWidth(textOf(await ui.find({ key: `card-kind-${id}` }))) <= cw).toBe(true)
+    }
     await ui.unmount()
   }
 })

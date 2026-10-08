@@ -211,6 +211,49 @@ export const shorten = (s: string, n: number) => {
   return n <= 0 ? '' : one.length > n ? `${one.slice(0, Math.max(0, n - 1)).trimEnd()}…` : one
 }
 
+// Code points a terminal draws 2 cells wide: Hangul jamo, CJK, Hangul, compatibility and
+// full-width forms, and emoji drawn as emoji by default (the pictographs and those in the BMP).
+const WIDE: [number, number][] = [
+  [0x1100, 0x115f], [0x231a, 0x231b], [0x23e9, 0x23ec], [0x23f0, 0x23f0], [0x23f3, 0x23f3],
+  [0x25fd, 0x25fe], [0x2614, 0x2615], [0x2648, 0x2653], [0x267f, 0x267f], [0x2693, 0x2693],
+  [0x26a1, 0x26a1], [0x26aa, 0x26ab], [0x26bd, 0x26be], [0x26c4, 0x26c5], [0x26ce, 0x26ce],
+  [0x26d4, 0x26d4], [0x26ea, 0x26ea], [0x26f2, 0x26f3], [0x26f5, 0x26f5], [0x26fa, 0x26fa],
+  [0x26fd, 0x26fd], [0x2705, 0x2705], [0x270a, 0x270b], [0x2728, 0x2728], [0x274c, 0x274c],
+  [0x274e, 0x274e], [0x2753, 0x2755], [0x2757, 0x2757], [0x2795, 0x2797], [0x27b0, 0x27b0],
+  [0x27bf, 0x27bf], [0x2b1b, 0x2b1c], [0x2b50, 0x2b50], [0x2b55, 0x2b55],
+  [0x2e80, 0xa4cf], [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe30, 0xfe4f], [0xff00, 0xff60], [0xffe0, 0xffe6],
+  [0x1f300, 0x1f64f], [0x1f680, 0x1f6ff], [0x1f900, 0x1f9ff], [0x1fa70, 0x1faff], [0x20000, 0x3fffd],
+]
+// Code points drawn on the cell before them: combining marks, zero-width joiners and spaces, variation selectors.
+const ZERO_WIDTH: [number, number][] = [[0x0300, 0x036f], [0x200b, 0x200f], [0x20d0, 0x20ff], [0xfe00, 0xfe0f]]
+const within = (cp: number, ranges: [number, number][]) => ranges.some(([lo, hi]) => cp >= lo && cp <= hi)
+
+/** The cells a string takes in a terminal: 2 for a wide code point, 0 for a combining one, 1 otherwise. */
+export const cellWidth = (s: string) => {
+  let n = 0
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) ?? 0
+    n += within(cp, ZERO_WIDTH) ? 0 : within(cp, WIDE) ? 2 : 1
+  }
+  return n
+}
+
+/** `shorten` in terminal cells: cut by whole code point (never half a surrogate pair), `…` when cut. */
+export const shortenCells = (s: string, cells: number) => {
+  const one = s.replace(/\s+/g, ' ').trim()
+  if (cells <= 0) return ''
+  if (cellWidth(one) <= cells) return one
+  let out = ''
+  let used = 0
+  for (const ch of one) {
+    const w = cellWidth(ch)
+    if (used + w > cells - 1) break
+    out += ch
+    used += w
+  }
+  return `${out.trimEnd()}…`
+}
+
 export const kTokens = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n)
 
@@ -465,12 +508,13 @@ export const shortModel = (id: string) => /(opus|sonnet|haiku)/i.exec(id)?.[1]?.
 
 /**
  * A card's second row: its type and model, always; then, for a sub-agent, `↳` and its parent's
- * title when at least 6 cells of it fit in `width`. Otherwise the parent waits for the expanded card.
+ * title when at least 6 cells of it fit in `width`. Otherwise the parent waits for the expanded
+ * card. Cut to `width` cells.
  */
 export const cardKind = (c: AgentCard, parent: AgentCard | null, width: number) => {
   const base = `${c.type} · ${shortModel(c.model)}`
-  const room = width - base.length - 5
-  return parent && room >= 6 ? `${base} · ↳ ${shorten(cardTitle(parent), room)}` : base
+  const room = width - cellWidth(base) - 5
+  return shortenCells(parent && room >= 6 ? `${base} · ↳ ${shortenCells(cardTitle(parent), room)}` : base, width)
 }
 
 /** A card's third row: its context, its output and its steps, or `starting…` before its first step. */

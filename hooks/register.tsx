@@ -60,6 +60,7 @@ import {
   recordCheck,
   settleCheck,
   shorten,
+  shortenCells,
   startConsult,
   stepLoop,
   timeBars,
@@ -824,7 +825,10 @@ export const register: Register = (on, options) => {
                   paddingX={1}
                   flexShrink={0}
                 >
-                  <Button key={`card-${c.id}`} plain {...hot} label={shorten(cardTitle(c), cw - (i < 9 ? 3 : 0))} onPress={expandOnPress(c.id)} />
+                  {/* Cut in cells, then held to one row: a wide title never wraps the card taller. */}
+                  <Box key={`card-title-${c.id}`} width={cw} height={1} overflow="hidden">
+                    <Button key={`card-${c.id}`} plain {...hot} label={shortenCells(cardTitle(c), cw - (i < 9 ? 3 : 0))} onPress={expandOnPress(c.id)} />
+                  </Box>
                   {/* A row of its own, its right end free for a badge beside the text. */}
                   <Box key={`card-kind-${c.id}`} justifyContent="space-between" width={cw}>
                     <Text color={C.dim} wrap="truncate">
@@ -832,10 +836,11 @@ export const register: Register = (on, options) => {
                     </Text>
                   </Box>
                   <Text dimColor wrap="truncate">
-                    {cardStats(c)}
+                    {shortenCells(cardStats(c), cw)}
                   </Text>
                   <Box>
-                    <Text color={isMax ? C.warn : statusColor(c)}>{`${glyph(c)} ${isMax ? 'max_tokens' : c.status} `}</Text>
+                    {/* The clock takes at most 5 cells (12h59) after the state. */}
+                    <Text color={isMax ? C.warn : statusColor(c)}>{shortenCells(`${glyph(c)} ${isMax ? 'max_tokens' : c.status}`, Math.max(1, cw - 6)) + ' '}</Text>
                     <Box flexShrink={0}>{clock(`card-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}</Box>
                   </Box>
                 </Box>
