@@ -2,12 +2,13 @@
 
 ## 0.8.0
 
-- The agent pane: a click on a card's title, or its hotkey (`1` to `9`), opens a second pane, `flightdeck-agent`, titled `Agent · <task>`, focused, as a tab beside Flightdeck; `Esc` closes it, another card switches it to that agent. It shows the agent's whole conversation from `$.session.messages({ agentId })`: `▶ user` and `◆ assistant`, the text wrapped, each tool call on one line (`⚒ Bash → …`, `✗` in red on an error) with the first 3 lines of its result and `… (+N lines)`, credentials masked, as plain text. Only the newest 400 messages and 60 000 characters are kept, under `… N earlier messages`; one message's text is cut at 6 000 characters.
+- The agent pane: a click on a card's title, or its hotkey (`1` to `9`), opens a second pane, `flightdeck-agent`, titled `Agent · <task>`, focused, as a tab beside Flightdeck; `Esc` closes it, another card switches it to that agent. It shows the agent's whole conversation from `$.session.messages({ agentId })`: `▶ user` and `◆ assistant`, the text wrapped, each tool call on one line (`⚒ Bash → …`, `✗` in red on an error) with the first 3 lines of its result and `… (+N lines)`, credentials masked, as plain text. Only the newest 400 messages and 60 000 characters are kept, under `… N earlier messages`; one message's text is cut at 6 000 characters, and a message too big on its own gives up its earliest tool calls (`… (+N tool calls)`), counted as stored.
 - The conversation is read in hooks, never while drawing: when the pane opens, then while the agent runs after its model requests and tool calls, at most once a second, and once more when it ends. The pane keeps the end in view until you scroll away from it, and again once you scroll back to the last row.
 - For an ended agent the session no longer serves, the pane reads its saved transcript (JSONL, at most 4 MiB), at the path `SubagentStop` names, else beside the main transcript, else rebuilt from the config directory, the working directory and the session id; otherwise it says `transcript unavailable: <why>`.
 - The expanded card leaves the main pane: its summary is the agent pane's, on `i`. The agents hint reads `1-9 open`.
 - `/flightdeck close` closes the agent pane too; so does the end of the session.
-- 77 tests.
+- A read that fails says why in the pane (`transcript unavailable: …`, credentials masked, a path cut to its file name) instead of leaving it on `reading…`.
+- 81 tests.
 
 ## 0.7.0
 
