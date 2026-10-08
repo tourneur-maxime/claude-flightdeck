@@ -1291,7 +1291,7 @@ test('a message from main to an ended agent: counted on its card, its fifth row,
   await ui.unmount()
 })
 
-test('a message between two agents counts out on one card and in on the other; a task notification counts on neither', async ($, on) => {
+test('a message between two agents counts out on one card and in on the other; a task notification or a hand-back counts on neither', async ($, on) => {
   engine(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `pm${++n}` }))
@@ -1303,6 +1303,8 @@ test('a message between two agents counts out on one card and in on the other; a
   await $.session.send({ to: 'pm1', text: 'Line 40 throws on empty input', origin: { kind: 'model' }, agentId: 'pm2' })
   await $.session.receive({ origin: { kind: 'peer' }, text: 'Line 40 throws on empty input', agentId: 'pm1' })
   await $.session.receive({ origin: { kind: 'task-notification' }, text: '<task-notification><task-id>pm2</task-id><status>completed</status></task-notification>' })
+  // A hand-back is a report, not a message: no send waits for it, it counts on no card.
+  await $.session.receive({ origin: { kind: 'peer' }, text: '<agent-message from="pm2">\n[Subagent hand-back] The report follows:\n  Found one bug.\n</agent-message>' })
   for (const cols of [40, 64, 120]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
     expect(textOf(await ui.find({ key: 'card-mail-pm1' }))).toBe('✉ 1 in · 0 out')
@@ -1320,6 +1322,7 @@ test('a message between two agents counts out on one card and in on the other; a
   }
   const log = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await log.find({ text: /^→ Implement the parser · « Line 40 throws on empty input »$/ })).toBeDefined()
+  expect(await log.find({ text: /Found one bug/ })).toBeUndefined() // the hand-back, not logged as a message
   // The sender in the log's who column, in the messages' colour.
   expect((await log.findAll({ type: 'Text', text: /^Review the…$/ })).some(t => t.props.color === 'warning')).toBe(true)
   await log.unmount()

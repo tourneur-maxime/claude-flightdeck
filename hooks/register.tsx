@@ -265,6 +265,8 @@ async function noteDelivery($: EngineInterface, cfg: Config, pending: PendingMes
   // A message from the main loop or another agent; other deliveries (a relay, a trigger) are not.
   if (e.origin.kind !== 'coordinator' && e.origin.kind !== 'peer' && e.origin.kind !== 'peer-send-message') return
   const i = pickPending(pending, to)
+  // A subagent's hand-back is its report, not a message: unless a send waits, it is not counted.
+  if (i < 0 && handbackOf(e.text)) return
   const p = i >= 0 ? pending.splice(i, 1)[0] : undefined
   const from = p?.from ?? (e.origin.kind === 'coordinator' ? 'main' : null)
   if (from === to) return
