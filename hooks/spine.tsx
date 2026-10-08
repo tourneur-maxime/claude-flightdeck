@@ -1,6 +1,7 @@
-// The lanes' trunk column, drawn on the surface's frame clock: packets run down from the header
-// and out along each running agent's branch, and the column rests dim when nothing runs. One
-// region for the whole column; only it redraws, the pane does not.
+// The agent cards' trunk column, drawn on the surface's frame clock: a comet runs down from the
+// header and out along each running agent's branch, and the column rests dim when nothing runs.
+// Several rows beside each card (cardSpine in core.ts); one region for the whole column; only it
+// redraws, the pane does not.
 import type { ClientModule } from 'claude-code'
 
 /** One row: its branch glyphs (one width for all), whether its agent runs, and the cells on the way to one that does. */

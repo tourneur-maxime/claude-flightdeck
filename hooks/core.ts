@@ -519,54 +519,11 @@ export const agentTree = (cards: AgentCard[]): TreeRow[] => {
   return out
 }
 
-/** One row of the lanes' trunk column: its branch glyphs, and which of its cells lead to a running agent. */
+/** One row of the cards' trunk column: its branch glyphs, whether its card runs, and which of its cells lead to a running card. */
 export type SpineRow = { prefix: string; active: boolean; flow: boolean[] }
 
-/** The trunk column's widest branch: the trunk, one level and the agent's own branch. */
+/** The trunk column's widest, in cells: three levels of two (the main loop's agents, theirs, and theirs). */
 export const SPINE_MAX = 6
-
-/**
- * The lanes' trunk column, one row per line beside it: every prefix cut to `SPINE_MAX` cells
- * (keeping the trunk and the agent's own branch, dropping the levels between) and padded to one
- * width, so the axis beside it starts on the same cell on every row. `flow` marks the cells on the
- * way from the header to each running agent: up its own branch, then each ancestor's line and
- * branch, to the trunk. A row with no branch of its own (the "+N earlier" line) only carries the trunk.
- */
-export const spineRows = (input: { prefix: string; active: boolean }[]): { rows: SpineRow[]; width: number } => {
-  const cut = input.map(r => (r.prefix.length > SPINE_MAX ? r.prefix.slice(0, SPINE_MAX - 2) + r.prefix.slice(-2) : r.prefix))
-  const width = Math.max(0, ...cut.map(p => p.length))
-  const cells = cut.map(p => Array.from(p.padEnd(width)))
-  const flow = cells.map(row => row.map(() => false))
-  const at = (r: number, x: number) => cells[r]?.[x] ?? ' '
-  const mark = (r: number, x: number) => {
-    const row = flow[r]
-    if (row && at(r, x) !== ' ') row[x] = true
-  }
-  input.forEach((r, i) => {
-    if (!r.active) return
-    const line = cells[i] ?? []
-    const conn = Math.max(line.lastIndexOf('├'), line.lastIndexOf('└'))
-    if (conn < 0) return
-    for (let x = conn; x < width; x += 1) mark(i, x)
-    let x = conn
-    let row = i - 1
-    while (row >= 0 && x >= 0) {
-      const ch = at(row, x)
-      if (ch === '│' || ch === '├' || ch === '└') {
-        mark(row, x)
-        row -= 1
-        continue
-      }
-      // The parent's row: its branch sits one level to the left; climb on from its connector.
-      x -= 2
-      if (x < 0) break
-      mark(row, x)
-      mark(row, x + 1)
-      row -= 1
-    }
-  })
-  return { rows: cut.map((p, i) => ({ prefix: p.padEnd(width), active: input[i]?.active ?? false, flow: flow[i] ?? [] })), width }
-}
 
 /** Levels the cards' trunk draws apart: 0 (the main loop's agents), 1 and 2; deeper ones share level 2's column. */
 const SPINE_LEVELS = (SPINE_MAX - 2) / 2
@@ -659,15 +616,6 @@ export const parentLabel = (c: AgentCard, cards: AgentCard[], architectIds: stri
   const parent = cards.find(x => x.id === c.parentId)
   if (parent) return cardTitle(parent)
   return architectIds.includes(c.parentId) ? architectName : 'agent'
-}
-
-/** A title split over two rows at a word boundary: `first` cells on row one, `rest` on row two. */
-export const titleLines = (title: string, first: number, rest: number): [string, string] => {
-  const t = title.replace(/\s+/g, ' ').trim()
-  if (t.length <= first) return [t, '']
-  const cut = t.lastIndexOf(' ', first)
-  const at = cut > 0 ? cut : first
-  return [t.slice(0, at).trim(), shorten(t.slice(at), rest)]
 }
 
 /**

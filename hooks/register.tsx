@@ -14,12 +14,16 @@ import {
   SCHEMA_VERSION,
   afterCall,
   agentTree,
+  agentsRows,
   applyStep,
   bucketOf,
+  CARD_ROWS,
+  cardKind,
+  cardSpine,
+  cardStats,
   cardTitle,
   CLAWD,
   CLAWD_COLORS,
-  titleLines,
   consultTimeline,
   describeInput,
   endConsult,
@@ -34,10 +38,10 @@ import {
   isAdvising,
   isLoopActive,
   kTokens,
-  timeBars,
   limitLabel,
   listOf,
   logRows,
+  MAX_CARDS,
   momentOf,
   normalize,
   normalizeCard,
@@ -56,9 +60,9 @@ import {
   recordCheck,
   settleCheck,
   shorten,
-  spineRows,
   startConsult,
   stepLoop,
+  timeBars,
 } from './core'
 import type { ClawdSpan, Config, Panel } from './core'
 
@@ -273,7 +277,7 @@ export const register: Register = (on, options) => {
     }
     const opened = await openPane($)
     if (!opened.isPlaced) return { text: `Flightdeck is not shown yet: ${opened.reason}` }
-    return { text: 'Flightdeck opened. Focus it with ctrl+x tab; 1-6 expand cards, f/s/o open the gate rows.' }
+    return { text: 'Flightdeck opened. Focus it with ctrl+x tab; 1-9 expand cards, f/s/o open the gate rows.' }
   })
 
   on('classic.UserPromptSubmit', async ($, e, next) => {
@@ -475,7 +479,7 @@ export const register: Register = (on, options) => {
       description: e.description,
       spawnedAt: await $.clock.now(),
     }
-    await update($, agents, list => [...listOf<unknown>(list).map(normalizeCard), card].slice(-24))
+    await update($, agents, list => [...listOf<unknown>(list).map(normalizeCard), card].slice(-MAX_CARDS))
     await update($, loops, l => listOf<Loop>(l).filter(x => x.id !== id))
     await say($, shorten(cardTitle(card), 12), `spawned · ${card.type}`, 'info', id)
     await refreshStatus($, cfg)
@@ -566,15 +570,9 @@ export const register: Register = (on, options) => {
     const decider = m.mode === 'auto' ? 'classifier' : 'you'
 
     // A connector between panels: animated while its flow is live, a dim line otherwise.
-    const rail = (key: string, active: boolean, color: string, width: number, marks: { at: number; active: boolean }[] = [], isMerge = false) =>
+    const rail = (key: string, active: boolean, color: string, width: number) =>
       motion ? (
-        <els.Client
-          key={key}
-          module="./rail.tsx"
-          width={width}
-          height={1}
-          props={{ active, width, color, dim: C.faint, marks, isMerge }}
-        />
+        <els.Client key={key} module="./rail.tsx" width={width} height={1} props={{ active, width, color, dim: C.faint }} />
       ) : (
         <Text color={C.faint}>{'─'.repeat(Math.max(1, width))}</Text>
       )
@@ -751,7 +749,7 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // ---- agents: cards up to the limit, swimlanes beyond it
+    // ---- agents: a card per agent, one under the other, off one trunk
     const statusColor = (c: AgentCard) => (c.status === 'failed' ? C.warn : c.status === 'done' ? C.gate : C.agent)
     const glyph = (c: AgentCard) => (c.status === 'running' ? '◐' : c.status === 'done' ? '✓' : c.status === 'failed' ? '✗' : '■')
     const expandOnPress = (id: string) => () =>
@@ -766,12 +764,9 @@ export const register: Register = (on, options) => {
         </Box>
       )
       const iw = Math.max(1, w - 4)
-      // Cards need 20 columns each; when the frame can't hold the limit, lanes take over.
-      const fit = Math.max(1, Math.min(cfg.maxCards, Math.floor((iw + 1) / 21)))
-      const useLanes = cards.length > fit
       // The title truncates rather than run past the frame; the hotkey hint shows only beside it.
       const title = `agents · ${running.length} running · ${cards.length} total`
-      const hint = cards.length > 0 ? `1-${Math.min(cards.length, useLanes ? 6 : fit)} expand` : ''
+      const hint = cards.length > 0 ? `1-${Math.min(cards.length, 9)} expand` : ''
       const header = (
         <Box justifyContent="space-between" width={iw}>
           <Text color={C.agent} bold wrap="truncate">
@@ -783,111 +778,71 @@ export const register: Register = (on, options) => {
       if (cards.length === 0) {
         return frame(header, <Text color={C.faint}>no subagents yet</Text>)
       }
-      if (useLanes) {
-        // The latest six, drawn as a tree off one trunk that starts under the header (the main
-        // loop): a branch per agent, each sub-agent under the agent that spawned it.
-        const tree = agentTree(cards.slice(-6))
-        const shown = tree.map(row => row.card)
-        const barW = Math.max(8, iw - 28)
-        const geo = timeBars(shown, now, barW)
-        const earlier = cards.length - shown.length
-        const spine = spineRows([
-          ...(earlier > 0 ? [{ prefix: '│', active: false }] : []),
-          ...tree.map(row => ({ prefix: row.prefix, active: row.card.status === 'running' })),
-        ])
-        // Trunk, then ` ◐ `, then the title: 19 cells on every row, so the time axis starts on the
-        // same cell at any depth. The title gives up what the trunk takes.
-        const titleW = 16 - spine.width
-        const trunk = motion ? (
-          <els.Client
-            key="spine"
-            module="./spine.tsx"
-            width={spine.width}
-            height={spine.rows.length}
-            props={{ rows: spine.rows, color: C.agent, dim: C.dim }}
-          />
-        ) : (
-          <Box flexDirection="column" width={spine.width} flexShrink={0}>
-            {spine.rows.map((row, i) => {
-              const c = shown[i - (earlier > 0 ? 1 : 0)]
-              return <Text color={c ? statusColor(c) : C.faint}>{row.prefix}</Text>
-            })}
-          </Box>
-        )
-        return frame(
-          header,
-          <Box>
-            {trunk}
-            <Box flexDirection="column">
-              {earlier > 0 ? (
-                <Box paddingLeft={1}>
-                  <Text color={C.faint}>{`+${earlier} earlier`}</Text>
-                </Box>
-              ) : null}
-              {tree.map(({ card: c }, i) => {
-                const gm = geo[i]
-                const isViewed = viewed === c.id
-                return (
-                  <Box>
-                    <Text color={statusColor(c)} bold={isViewed}>{` ${isViewed ? '▶' : glyph(c)} `}</Text>
-                    <Box key={`lane-title-${c.id}`} width={titleW} flexShrink={0}>
-                      <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={shorten(cardTitle(c), titleW - 3)} onPress={expandOnPress(c.id)} />
-                    </Box>
-                    <Text color={C.faint}>{' ' + '·'.repeat(gm?.before ?? 0)}</Text>
-                    <Text color={statusColor(c)}>{'━'.repeat(gm?.bar ?? 1)}</Text>
-                    <Text color={C.faint}>{'·'.repeat(gm?.after ?? 0) + ' '}</Text>
-                    {clock(`lane-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}
-                  </Box>
-                )
-              })}
-            </Box>
-          </Box>,
-        )
-      }
-      const tree = agentTree(cards.slice(-fit))
-      const shown = tree.map(row => row.card)
-      const cardW = Math.max(20, Math.floor((iw - (shown.length - 1)) / shown.length))
-      // One branch per card on each rail: bright and flowing while that agent runs, dim once it ends.
-      const marks = shown.map((c, i) => ({ at: i * (cardW + 1) + Math.floor(cardW / 2), active: c.status === 'running' }))
-      const isFlowing = marks.some(mk => mk.active)
+      // Every card kept, in the tree's order (each sub-agent right after its parent), beside one
+      // trunk that starts under the header: CARD_ROWS rows of it beside each card, the branch on
+      // the card's top row. The cards take the rest of the inner width.
+      const tree = agentTree(cards)
+      const spine = cardSpine(tree.map(row => ({ depth: row.depth, active: row.card.status === 'running' })))
+      const cardW = Math.max(1, iw - spine.width)
+      const cw = Math.max(1, cardW - 4)
+      const trunk = motion ? (
+        <els.Client
+          key="spine"
+          module="./spine.tsx"
+          width={spine.width}
+          height={spine.rows.length}
+          props={{ rows: spine.rows, color: C.agent, dim: C.dim }}
+        />
+      ) : (
+        <Box flexDirection="column" width={spine.width} flexShrink={0}>
+          {spine.rows.map((row, k) => {
+            const c = tree[Math.floor(k / CARD_ROWS)]?.card
+            return <Text color={c ? statusColor(c) : C.faint}>{row.prefix}</Text>
+          })}
+        </Box>
+      )
       return frame(
         header,
-        rail('fan-out', isFlowing, C.agent, iw, marks),
-        <Box columnGap={1}>
-          {tree.map(({ card: c, parent }, i) => {
-            const isViewed = viewed === c.id
-            const sameModel = !c.model || prettyModel(c.model) === modelName
-            const kind = sameModel ? c.type : `${c.type} · ${prettyModel(c.model)}`
-            return (
-              <Box
-                flexDirection="column"
-                borderStyle={isViewed ? 'double' : 'round'}
-                borderColor={c.lastStop === 'max_tokens' ? C.warn : C.agent}
-                borderDimColor={c.status !== 'running' && !isViewed}
-                width={cardW}
-                paddingX={1}
-              >
-                <Button key={`card-${c.id}`} plain hotkey={String(i + 1)} label={titleLines(cardTitle(c), cardW - 7, cardW - 4)[0]} onPress={expandOnPress(c.id)} />
-                <Text bold wrap="truncate">
-                  {titleLines(cardTitle(c), cardW - 7, cardW - 4)[1]}
-                </Text>
-                <Text color={C.dim} wrap="truncate">
-                  {parent ? `↳ ${shorten(cardTitle(parent), Math.max(6, cardW - 6 - Math.min(kind.length + 3, 10)))} · ${kind}` : kind}
-                </Text>
-                <Text dimColor wrap="truncate">
-                  {c.steps > 0 ? `ctx ${kTokens(c.ctx)} · out ${kTokens(c.out)} · ${c.steps} st` : 'starting…'}
-                </Text>
-                <Box>
-                  <Text color={c.lastStop === 'max_tokens' ? C.warn : statusColor(c)}>
-                    {cardW >= 26 ? `${glyph(c)} ${c.lastStop === 'max_tokens' ? 'max_tokens' : c.status} ` : `${glyph(c)} `}
+        <Box>
+          {trunk}
+          <Box flexDirection="column" width={cardW}>
+            {tree.map(({ card: c, parent }, i) => {
+              const isViewed = viewed === c.id
+              const isMax = c.lastStop === 'max_tokens'
+              // Digits 1-9 only: the cards after the ninth expand by a press.
+              const hot = i < 9 ? { hotkey: String(i + 1) } : {}
+              // Four rows between the borders, each one row high (truncated), so a card is
+              // CARD_ROWS tall, as the trunk beside it counts.
+              return (
+                <Box
+                  key={`agent-${c.id}`}
+                  flexDirection="column"
+                  borderStyle={isViewed ? 'double' : 'round'}
+                  borderColor={isMax ? C.warn : C.agent}
+                  borderDimColor={c.status !== 'running' && !isViewed}
+                  width={cardW}
+                  paddingX={1}
+                  flexShrink={0}
+                >
+                  <Button key={`card-${c.id}`} plain {...hot} label={shorten(cardTitle(c), cw - (i < 9 ? 3 : 0))} onPress={expandOnPress(c.id)} />
+                  {/* A row of its own, its right end free for a badge beside the text. */}
+                  <Box key={`card-kind-${c.id}`} justifyContent="space-between" width={cw}>
+                    <Text color={C.dim} wrap="truncate">
+                      {cardKind(c, parent, cw)}
+                    </Text>
+                  </Box>
+                  <Text dimColor wrap="truncate">
+                    {cardStats(c)}
                   </Text>
-                  <Box flexShrink={0}>{clock(`card-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}</Box>
+                  <Box>
+                    <Text color={isMax ? C.warn : statusColor(c)}>{`${glyph(c)} ${isMax ? 'max_tokens' : c.status} `}</Text>
+                    <Box flexShrink={0}>{clock(`card-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}</Box>
+                  </Box>
                 </Box>
-              </Box>
-            )
-          })}
+              )
+            })}
+          </Box>
         </Box>,
-        rail('merge', isFlowing, C.agent, iw, marks, true),
       )
     }
 
@@ -959,7 +914,16 @@ export const register: Register = (on, options) => {
     // Clawd stands under the log (not inline, nor in a pane narrower than he can stand in).
     const showMascot = cfg.mascot && e.props.bodyColumns >= 40
     const used =
-      2 + 5 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 5 + Math.min(6, cards.length) : 10) + (expandedCard ? 9 : 0) + (lp.length ? 1 : 0) + 3 + (showMascot ? 3 : 0)
+      2 +
+      5 +
+      (showArchitect ? 6 : 0) +
+      6 +
+      (v.gateOpen ? 5 : 0) +
+      (panels.includes('agents') ? agentsRows(cards.length) : 0) +
+      (expandedCard ? 9 : 0) +
+      (lp.length ? 1 : 0) +
+      3 +
+      (showMascot ? 3 : 0)
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
@@ -1002,7 +966,7 @@ export const register: Register = (on, options) => {
                   ? receiptPanel(w)
                   : logPanel(w)
 
-    // Panels with the flow between them; the agents panel draws its own rails.
+    // Panels with the flow between them; the agents panel's trunk carries its own.
     const column = (ps: Panel[], w: number) => (
       <Box flexDirection="column" width={w}>
         {ps.map((p, i) => {
@@ -1022,16 +986,16 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    // Desktop draws the agents' time axis as SVG under the panels.
-    const svgLanes =
+    // Desktop draws the agents' time axis as SVG under the panels: a bar per card, in the list's order.
+    const svgTimeline =
       e.surface !== 'terminal' && cards.length > 0
         ? (() => {
             const { Svg } = $.ui.resolve(e)
             const rowH = 18
             const pxW = 520
-            const geo = timeBars(cards.slice(-10), now, 100)
-            const rects = cards
-              .slice(-10)
+            const shown = agentTree(cards).map(row => row.card)
+            const geo = timeBars(shown, now, 100)
+            const rects = shown
               .map((c, i) => {
                 const gm = geo[i]
                 const x = 150 + ((gm?.before ?? 0) / 100) * (pxW - 160)
@@ -1041,7 +1005,7 @@ export const register: Register = (on, options) => {
                 return `<text x="4" y="${i * rowH + 13}" font-size="11" fill="${SVG_COLORS.label}">${label}</text><rect x="${x}" y="${i * rowH + 4}" width="${wpx}" height="10" rx="3" fill="${fill}"/>`
               })
               .join('')
-            const svgH = Math.min(10, cards.length) * rowH + 4
+            const svgH = shown.length * rowH + 4
             return (
               <Svg
                 source={`<svg xmlns="http://www.w3.org/2000/svg" width="${pxW}" height="${svgH}" viewBox="0 0 ${pxW} ${svgH}">${rects}</svg>`}
@@ -1193,7 +1157,7 @@ export const register: Register = (on, options) => {
           ))}
         </Box>
         {body}
-        {svgLanes}
+        {svgTimeline}
         {mascot}
       </Box>
     )

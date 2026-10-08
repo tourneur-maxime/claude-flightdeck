@@ -432,7 +432,7 @@ test('pastel keeps the fixed dark-terminal colours', { options: { palette: 'past
   await ui.unmount()
 })
 
-test('subagents become cards, then swimlanes past the card limit; a card expands on its hotkey', async ($, on) => {
+test('subagents become cards in a list, a card expands on its hotkey, and the desktop adds a time axis', async ($, on) => {
   engine(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `ag${++n}` }))
@@ -442,19 +442,22 @@ test('subagents become cards, then swimlanes past the card limit; a card expands
 
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await ui.find({ text: /Write the parser/ })).toBeDefined()
-  expect(await ui.find({ text: /Sonnet 5\.5/ })).toBeDefined() // differs from main: shown
+  expect(textOf(await ui.find({ key: 'card-kind-ag2' }))).toBe('Explore · sonnet') // the model, always
+  expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^Write the parser tests$/ })).toBeUndefined()
   await ui.press({ key: 'card-ag1' })
-  expect(await ui.find({ text: /^Write the parser tests$/ })).toBeDefined() // the expanded panel, full title
+  expect(await ui.find({ type: 'Text', text: /^Write the parser tests$/ })).toBeDefined() // the expanded panel, full title
   await ui.unmount()
 
   await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
   await $.agent.spawn(spawn('general-purpose', 'Review the parser'))
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const lanesUi = await $.ui.mount({ ...pane(64), surface })
-    expect(await lanesUi.find({ text: /4 total/ })).toBeDefined()
-    expect(await lanesUi.find({ text: /━/ })).toBeDefined()
-    await lanesUi.unmount()
-  }
+  const desk = await $.ui.mount({ ...pane(64), surface: 'desktop' })
+  expect(await desk.find({ text: /4 total/ })).toBeDefined()
+  expect((await desk.findAll({ type: 'Box' })).filter(b => /^agent-/.test(String(b.key))).length).toBe(4)
+  const svg = await desk.find({ type: 'Svg' })
+  expect(svg?.props.alt).toBe('4 agents on a time axis')
+  expect((String(svg?.props.source).match(/<rect /g) ?? []).length).toBe(4) // one bar per agent
+  await desk.unmount()
 })
 
 test('the server-side advisor is read from assistant rows: consulting, then on call', async ($, on) => {
@@ -545,19 +548,43 @@ test('with no architect anywhere, the panel, legend entry and status field stay 
   await ui.unmount()
 })
 
-test('cards that cannot fit the pane fall back to lanes', async ($, on) => {
-  engine(on)
+test('a card per agent, in the tree order, each as wide as the frame leaves beside one trunk as tall as the cards', async ($, on) => {
+  engine(on, 65_000)
   let n = 0
-  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `w${++n}` }))
-  await $.turn.start({ text: 'go', turnId: 'W1' })
-  for (const d of ['alpha', 'beta', 'gamma']) await $.agent.spawn(spawn('Explore', `task ${d}`))
-  const narrow = await $.ui.mount({ ...pane(40), surface: 'terminal' })
-  expect(await narrow.find({ text: /━/ })).toBeDefined() // lanes
-  await narrow.unmount()
-  const wide = await $.ui.mount({ ...pane(70), surface: 'terminal' })
-  expect(await wide.find({ text: /━/ })).toBeUndefined() // three cards fit in 70
-  expect(await wide.find({ text: /task gamma/ })).toBeDefined()
-  await wide.unmount()
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `l${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'L1' })
+  await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
+  await $.agent.spawn(spawn('Explore', 'Review the docs'))
+  await $.agent.spawn(spawn('general-purpose', 'Write parser tests', 'l1'))
+  await $.agent.spawn(spawn('Explore', 'Check edge cases'))
+  await $.agent.spawn(spawn('Explore', 'Map the call sites'))
+  for (const id of ['l2', 'l4', 'l5']) await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 'L1', agentId: id, reason: 'answer' })
+  const order = ['l1', 'l3', 'l2', 'l4', 'l5'] // l3 right after its parent
+  // 120 columns is the wide layout: the agents sit in the right-hand column, (120 - 2) / 2 wide.
+  for (const [cols, w] of [[40, 40], [64, 64], [120, 59]] as const) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    const iw = w - 4
+    const boxes = (await ui.findAll({ type: 'Box' })).filter(b => /^agent-/.test(String(b.key)))
+    expect(boxes.map(b => b.key)).toEqual(order.map(id => `agent-${id}`))
+    const spine = await ui.find({ type: 'Client', key: 'spine' })
+    const props = spine?.props.props as SpineProps
+    expect([spine?.props.width, spine?.props.height]).toEqual([4, 30]) // 6 rows a card
+    expect(props.rows.filter((_, k) => k % 6 === 0).map(r => r.prefix)).toEqual(['├─┬─', '│ └─', '├───', '├───', '└───'])
+    expect(props.rows.map(r => r.active)).toEqual([true, true, false, false, false].flatMap(a => Array.from({ length: 6 }, () => a)))
+    for (const b of boxes) {
+      expect(Number(b.props.width) + Number(spine?.props.width)).toBe(iw) // the frame's inner width, beside the trunk
+      expect([b.props.borderStyle, b.props.paddingX]).toEqual(['round', 1])
+      expect(b.props.borderDimColor).toBe(b.key !== 'agent-l1' && b.key !== 'agent-l3') // ended: dim
+      expect((b.children ?? []).filter(Boolean).length).toBe(4) // 4 rows between its borders: 6, as the trunk counts
+    }
+    for (const id of order) expect(textOf(await ui.find({ key: `card-kind-${id}` }))).toMatch(/^[\w-]+ · sonnet( · ↳ .+)?$/) // the model in short, the parent after it when it fits
+    expect((await ui.findAll({ type: 'Text', text: /^◐ running $/ })).length).toBe(2)
+    expect((await ui.findAll({ type: 'Text', text: /^✓ done $/ })).length).toBe(3)
+    const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('card-'))
+    expect(buttons.map(b => [b.key, b.props.hotkey])).toEqual(order.map((id, i) => [`card-${id}`, String(i + 1)]))
+    for (const b of buttons) expect(3 + String(b.props.label).length <= iw - 4 - 4).toBe(true) // `1: ` and the title, inside the card
+    await ui.unmount()
+  }
 })
 
 test("a background architect's advice is read from its hand-back", async ($, on) => {
@@ -575,7 +602,7 @@ test("a background architect's advice is read from its hand-back", async ($, on)
   await ui.unmount()
 })
 
-test('lanes draw the spawn tree: a branch before each sub-agent, its parent in the expanded panel', async ($, on) => {
+test('the list draws the spawn tree: a sub-agent under its parent, any depth, its parent in the expanded panel', async ($, on) => {
   engine(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `g${++n}` }))
@@ -587,10 +614,10 @@ test('lanes draw the spawn tree: a branch before each sub-agent, its parent in t
   for (const cols of [40, 64, 120]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
     expect(await ui.find({ text: /4 total/ })).toBeDefined()
-    // One trunk column from the header: every agent branches off it, sub-agents under their parent.
+    // One trunk from the header: every card branches off it, sub-agents off their parent's line.
     const spine = await ui.find({ type: 'Client', key: 'spine' })
-    const rows = (spine?.props.props as { rows: { prefix: string; active: boolean }[] }).rows
-    expect(rows.map(r => r.prefix.trimEnd())).toEqual(['├─', '│ └─', '│   └─', '└─'])
+    const rows = (spine?.props.props as SpineProps).rows
+    expect(rows.filter((_, k) => k % 6 === 0).map(r => r.prefix)).toEqual(['├─┬───', '│ └─┬─', '│   └─', '└─────'])
     expect(await ui.find({ in: 'spine', text: /└─/ })).toBeDefined()
     // Parent first, then its line of descent, then the next top-level agent.
     const titles = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => String(k).startsWith('card-'))
@@ -604,7 +631,7 @@ test('lanes draw the spawn tree: a branch before each sub-agent, its parent in t
   }
 })
 
-test("cards name a sub-agent's parent; the rail lights only the branches still running", async ($, on) => {
+test("a sub-agent's card names its parent beside its type and model when it fits; an ended card is dim", async ($, on) => {
   engine(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `k${++n}` }))
@@ -612,20 +639,24 @@ test("cards name a sub-agent's parent; the rail lights only the branches still r
   await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
   await $.agent.spawn(spawn('Explore', 'Map the call sites', 'k1'))
   await $.turn.complete({ answer: 'mapped', durationMs: 10, isAborted: false, turnId: 'K1', agentId: 'k2', reason: 'answer' })
-  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect(await ui.find({ text: /━/ })).toBeUndefined() // two cards fit: no lanes
-  expect(await ui.find({ text: /^↳ Implement th… · Explore\b/ })).toBeDefined() // 25 cells inside a card in the frame
-  for (const key of ['fan-out', 'merge']) {
-    const marks = await ui.findAll({ in: key, text: /[┬┴]/ })
-    expect(marks.some(m => m.props.color === 'suggestion' && m.props.bold === true)).toBe(true) // k1 runs
-    expect(marks.some(m => m.props.color === 'subtle')).toBe(true) // k2 is done
+  // 64 columns: 52 cells inside a card; 40: 28, so 9 cells of the parent's title.
+  for (const [cols, kind] of [[64, 'Explore · opus · ↳ Implement the parser'], [40, 'Explore · opus · ↳ Implemen…']] as const) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    expect(textOf(await ui.find({ key: 'card-kind-k2' }))).toBe(kind)
+    expect(textOf(await ui.find({ key: 'card-kind-k1' }))).toBe('general-purpose · opus')
+    // Its row leaves room at its right end (a row of its own, not a wrapping text).
+    const row = await ui.find({ key: 'card-kind-k2' })
+    expect([row?.type, row?.props.justifyContent]).toEqual(['Box', 'space-between'])
+    for (const key of ['fan-out', 'merge']) expect(await ui.find({ key })).toBeUndefined() // no rails around the cards
+    const dim = [(await ui.find({ key: 'agent-k1' }))?.props.borderDimColor, (await ui.find({ key: 'agent-k2' }))?.props.borderDimColor]
+    expect(dim).toEqual([false, true])
+    await ui.unmount()
   }
-  await ui.unmount()
 })
 
 type SpineProps = { rows: { prefix: string; active: boolean; flow: boolean[] }[]; color: string; dim: string }
 
-test('lanes hang every agent off one trunk from the header; packets run only to the agent still running', async ($, on) => {
+test('every card hangs off one trunk from the header; a comet runs down it only to the card still running', async ($, on) => {
   engine(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `t${++n}` }))
@@ -637,10 +668,15 @@ test('lanes hang every agent off one trunk from the header; packets run only to 
     const spine = await ui.find({ type: 'Client', key: 'spine' })
     expect(spine).toBeDefined()
     const props = spine?.props.props as SpineProps
-    expect(props.rows.map(r => r.prefix)).toEqual(['├─', '├─', '├─', '└─'])
-    expect(props.rows.map(r => r.active)).toEqual([false, true, false, false])
-    expect([spine?.props.width, spine?.props.height]).toEqual([2, 4])
-    // Hotkeys follow the rows as drawn.
+    expect(props.rows.map(r => r.prefix)).toEqual([
+      ...['├─', '│ ', '│ ', '│ ', '│ ', '│ '],
+      ...['├─', '│ ', '│ ', '│ ', '│ ', '│ '],
+      ...['├─', '│ ', '│ ', '│ ', '│ ', '│ '],
+      ...['└─', '  ', '  ', '  ', '  ', '  '],
+    ])
+    expect(props.rows.filter((_, k) => k % 6 === 0).map(r => r.active)).toEqual([false, true, false, false])
+    expect([spine?.props.width, spine?.props.height]).toEqual([2, 24])
+    // Hotkeys follow the cards as drawn.
     const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('card-'))
     expect(buttons.map(b => [b.key, b.props.hotkey])).toEqual([
       ['card-t1', '1'],
@@ -648,42 +684,41 @@ test('lanes hang every agent off one trunk from the header; packets run only to 
       ['card-t3', '3'],
       ['card-t4', '4'],
     ])
-    // The axis starts at the same cell on every row: trunk + glyph + title always take 19 cells.
-    const titles = (await ui.findAll({ type: 'Box' })).filter(b => String(b.key).startsWith('lane-title-'))
-    expect(titles.length).toBe(4)
-    for (const t of titles) expect(Number(spine?.props.width) + 3 + Number(t.props.width)).toBe(19)
-    for (const b of buttons) expect(String(b.props.label).length <= 13 - Number(spine?.props.width)).toBe(true)
-    // A comet runs down the trunk to the running agent's branch: a thick bold head on the wire
-    // (the branch glyphs ├ └ kept), a fading trail; no dots. The ended branches stay dim.
+    // A comet runs down the trunk to the running card's branch: a thick bold head on the wire
+    // (┃ down the trunk, ━ along the branch; ├ └ kept), a fading trail; no dots. The ended branches stay dim.
     let heads = 0
     let trails = 0
-    for (let step = 0; step < 8; step += 1) {
+    let outward = 0
+    for (let step = 0; step < 12; step += 1) {
       await ui.advance(130)
       const lit = await ui.findAll({ in: 'spine', type: 'Text' })
       expect(lit.some(t => /[●•]/.test(t.text))).toBe(false)
-      heads += lit.filter(t => /━/.test(t.text) && t.props.color === 'suggestion' && t.props.bold === true).length
+      heads += lit.filter(t => /[━┃]/.test(t.text) && t.props.color === 'suggestion' && t.props.bold === true).length
+      outward += lit.filter(t => /━/.test(t.text) && t.props.color === 'suggestion' && t.props.bold === true).length
       trails += lit.filter(t => t.props.color === 'suggestion' && t.props.dimColor === true && t.props.bold !== true).length
     }
-    expect([heads > 0, trails > 0]).toEqual([true, true])
+    expect([heads > 0, outward > 0, trails > 0]).toEqual([true, true, true])
     const drawn = await ui.findAll({ in: 'spine', type: 'Text' })
     expect(drawn.some(t => t.props.color === 'inactive' && /├─/.test(t.text))).toBe(true)
     await ui.unmount()
   }
 })
 
-test('lanes past six agents: the trunk runs through the "+N earlier" row and hotkeys stay 1-6', async ($, on) => {
+test('every card kept is drawn, none "earlier"; hotkeys 1-9, the cards after them without one', async ($, on) => {
   engine(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `e${++n}` }))
   await $.turn.start({ text: 'go', turnId: 'E1' })
-  for (let i = 1; i <= 8; i += 1) await $.agent.spawn(spawn('Explore', `job ${i}`))
+  for (let i = 1; i <= 11; i += 1) await $.agent.spawn(spawn('Explore', `job ${i}`))
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect(await ui.find({ text: /^\+2 earlier$/ })).toBeDefined()
-  const props = (await ui.find({ type: 'Client', key: 'spine' }))?.props.props as SpineProps
-  expect(props.rows.map(r => r.prefix)).toEqual(['│ ', '├─', '├─', '├─', '├─', '├─', '└─'])
-  expect(props.rows.map(r => r.active)).toEqual([false, true, true, true, true, true, true])
-  const keys = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('card-')).map(b => b.props.hotkey)
-  expect(keys).toEqual(['1', '2', '3', '4', '5', '6'])
+  expect(await ui.find({ text: /earlier/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Client', key: 'spine' }))?.props.height).toBe(66)
+  const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('card-'))
+  expect(buttons.map(b => b.props.label)).toEqual(Array.from({ length: 11 }, (_, i) => `job ${i + 1}`))
+  expect(buttons.map(b => b.props.hotkey)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', undefined, undefined])
+  expect(await ui.find({ text: /^1-9 expand$/ })).toBeDefined()
+  await ui.press({ key: 'card-e11' }) // still expands, by a press
+  expect(await ui.find({ type: 'Text', text: /^job 11$/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -714,8 +749,14 @@ const under = (node: { children?: unknown[] } | undefined): Drawn[] =>
     const text = (el.children ?? []).filter(x => typeof x === 'string').join('')
     return [{ type: el.type, props: el.props ?? {}, text }, ...under(el)]
   })
+/** A keyed row's text: the Texts under it, joined. */
+const textOf = (node: { children?: unknown[] } | undefined) =>
+  under(node)
+    .filter(t => t.type === 'Text')
+    .map(t => t.text)
+    .join('')
 
-test('the agents section is framed in the agents colour, its title too, and lanes fit inside', async ($, on) => {
+test('the agents section is framed in the agents colour, its title too, and the cards fit inside', async ($, on) => {
   engine(on, 65_000)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `fr${++n}` }))
@@ -729,15 +770,14 @@ test('the agents section is framed in the agents colour, its title too, and lane
     const inside = under(frame)
     const title = inside.find(t => t.type === 'Text' && /^agents ·/.test(t.text))
     expect([title?.props.color, title?.props.bold]).toEqual(['suggestion', true])
-    // Inside the frame (w - 4 cells): the axis spans w - 32 cells (8 at least), and a lane row,
-    // its 19 cells of trunk and title, the axis and its clock, never runs past the frame.
-    const inner = w - 4
-    const axis = inside.filter(t => t.type === 'Text' && /^ ·*$|^━+$|^·* $/.test(t.text))
-    const rowW = axis.reduce((sum, t) => sum + t.text.length, 0) / 4
-    expect(rowW).toBe(Math.max(8, inner - 28) + 2)
+    // Inside the frame (w - 4 cells): the trunk, then each card; a card's status row, its
+    // glyph, its state and its clock, fits inside the card's own border and padding.
+    const spine = await ui.find({ type: 'Client', key: 'spine' })
     for (const id of ['fr1', 'fr2', 'fr3', 'fr4']) {
-      const shown = await ui.find({ in: `lane-clock-${id}`, type: 'Text', text: /^\d+:\d\d$/ })
-      expect(19 + rowW + (shown?.text.length ?? 99) <= inner).toBe(true)
+      const card = await ui.find({ key: `agent-${id}` })
+      expect(Number(spine?.props.width) + Number(card?.props.width)).toBe(w - 4)
+      const shown = await ui.find({ in: `card-clock-${id}`, type: 'Text', text: /^\d+:\d\d$/ })
+      expect('◐ running '.length + (shown?.text.length ?? 99) <= Number(card?.props.width) - 4).toBe(true)
     }
     await ui.unmount()
   }
@@ -748,23 +788,6 @@ test('the agents section is framed in the agents colour, its title too, and lane
   await mini.unmount()
 })
 
-test('inside the frame, three cards need a 66-column pane; at 64 they fall back to lanes', async ($, on) => {
-  engine(on)
-  let n = 0
-  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `th${++n}` }))
-  await $.turn.start({ text: 'go', turnId: 'TH1' })
-  for (const d of ['alpha', 'beta', 'gamma']) await $.agent.spawn(spawn('Explore', `task ${d}`))
-  const at64 = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect(await at64.find({ text: /━/ })).toBeDefined() // 60 cells inside: two cards at most
-  await at64.unmount()
-  const at66 = await $.ui.mount({ ...pane(66), surface: 'terminal' })
-  expect(await at66.find({ text: /━/ })).toBeUndefined() // 62 cells inside: three cards of 20
-  const cards = under(await at66.find({ key: 'agents-frame' })).filter(b => b.type === 'Box' && b.props.borderStyle === 'round')
-  expect(cards.map(b => b.props.width)).toEqual([20, 20, 20])
-  await at66.unmount()
-})
-
-// A session that has cost $18.50 before a turn and $19.46 after it, with a 5h limit reading.
 const costlyTurn = async ($: Engine, on: On) => {
   engine(on)
   let usd = 18.5
@@ -807,7 +830,7 @@ type Run = { type: string; props: { color?: string; bold?: boolean; dimColor?: b
 const runsOf = async (ui: { drawn: (scope?: { in: string }) => Promise<unknown> }, key: string) =>
   (((await ui.drawn({ in: key })) as { children?: Run[] }).children ?? []).map(r => ({ ...r.props, text: r.children.join('') }))
 
-test('rails carry a comet on the wire: a 2-cell thick head, a 3-cell fading trail, marks kept; nothing while idle', async ($, on) => {
+test('rails carry a comet on the wire: a 2-cell thick head, a 3-cell fading trail; nothing while idle', async ($, on) => {
   engine(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `co${++n}` }))
@@ -833,25 +856,13 @@ test('rails carry a comet on the wire: a 2-cell thick head, a 3-cell fading trai
     seen = true
   }
   expect(seen).toBe(true)
-  // The agents' rails: a head runs along the running card's stretch; the marks keep ┬ and ┴.
-  let heads = 0
-  for (let step = 0; step < 30; step += 1) {
-    await ui.advance(110)
-    for (const key of ['fan-out', 'merge']) {
-      const runs = await runsOf(ui, key)
-      expect(runs.some(r => /[●•]/.test(r.text))).toBe(false)
-      expect(runs.map(r => r.text).join('').replace(/[━─]/g, '').length).toBe(2) // two marks, never overwritten
-      heads += runs.filter(r => /━/.test(r.text) && r.color === 'suggestion' && r.bold === true).length
-    }
-  }
-  expect(heads > 0).toBe(true)
   await ui.unmount()
   // Once nothing runs, no head anywhere.
   await $.turn.complete({ answer: 'done', durationMs: 10, isAborted: false, turnId: 'CO1', agentId: 'co1', reason: 'answer' })
   await $.turn.complete({ answer: 'done', durationMs: 10, isAborted: false, turnId: 'CO1', reason: 'answer' })
   const idle = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   await idle.advance(500)
-  for (const key of ['fan-out', 'merge', 'link-gate']) expect((await runsOf(idle, key)).some(r => /[━┃]/.test(r.text))).toBe(false)
+  expect((await runsOf(idle, 'link-gate')).some(r => /[━┃]/.test(r.text))).toBe(false)
   await idle.unmount()
 })
 
@@ -869,7 +880,7 @@ test('the agents title never runs past the frame: the hotkey hint gives way firs
     const texts = under(header as { children?: unknown[] }).filter(t => t.type === 'Text')
     expect(texts[0]?.text).toBe('agents · 12 running · 12 total')
     expect(texts[0]?.props.wrap).toBe('truncate')
-    expect(texts.some(t => t.text === '1-6 expand')).toBe(hint)
+    expect(texts.some(t => t.text === '1-9 expand')).toBe(hint)
     expect(texts.reduce((sum, t) => sum + t.text.length, 0) + (texts.length - 1) <= cols - 4).toBe(true)
     await ui.unmount()
   }
@@ -932,22 +943,22 @@ const logLinesAt = async ($: Engine, on: On, bodyRows: number) => {
   engine(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `lg${++n}` }))
-  await $.turn.start({ text: 'go', turnId: 'LG1' })
-  for (let i = 1; i <= 8; i += 1) await $.agent.spawn(spawn('Explore', `job ${i}`))
+  for (let i = 1; i <= 9; i += 1) await $.turn.start({ text: `prompt ${i}`, turnId: `LG${i}` })
+  await $.agent.spawn(spawn('Explore', 'one job'))
   const ui = await $.ui.mount({ ...pane(64), props: { ...pane(64).props, scroll: { offset: 0, bodyRows } }, surface: 'terminal' })
   const count = (await ui.findAll({ type: 'Text', text: clockOf })).length
   await ui.unmount()
   return count
 }
 
-// 8 lanes (3 + 6 rows, + 2 for the agents' frame) beside main, gate and the pane's frame: 27 rows
-// used. 36 rows leave the log 6; Clawd's 3 rows leave it the floor of 4.
+// One card (its frame and title, 3 rows, then its 6) beside main, gate, the receipt and the pane's
+// header: 25 rows used. 36 rows leave the log 8; Clawd's 3 rows leave it 5.
 test('Clawd takes its 3 rows from the log, not from the panes below it', async ($, on) => {
-  expect(await logLinesAt($, on, 36)).toBe(4)
+  expect(await logLinesAt($, on, 36)).toBe(5)
 })
 
 test('without Clawd the log keeps those rows', { options: { mascot: 'off' } }, async ($, on) => {
-  expect(await logLinesAt($, on, 36)).toBe(6)
+  expect(await logLinesAt($, on, 36)).toBe(8)
 })
 
 // Docked, the pane's room is bodyRows whatever its tree: the tree's root asks for at least that

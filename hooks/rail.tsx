@@ -2,18 +2,11 @@
 // and it rests as a plain dim line otherwise. Only this region redraws; the pane does not.
 import type { ClientModule } from 'claude-code'
 
-/** A branch to one child: where it drops, and whether that child is still running. */
-type Mark = { at: number; active: boolean }
-
 type Props = {
   active: boolean
   width: number
   color: string
   dim: string
-  /** Cells where a branch drops (┬); the rest of the line is ─. */
-  marks: Mark[]
-  /** Draw ┴ instead of ┬ at the marks: a merge into what is below. */
-  isMerge: boolean
 }
 
 type Ref = { phase: number; active: boolean }
@@ -40,9 +33,7 @@ const Rail: ClientModule<Props, State> = (props, surface) => {
   }
 
   const width = Math.max(1, surface.columns || props.width)
-  const marks = props.marks.filter(m => m.at >= 0 && m.at < width)
   const cells = Array.from({ length: width }, () => '─')
-  for (const m of marks) cells[m.at] = props.isMerge ? '┴' : '┬'
 
   if (!props.active) {
     return (
@@ -51,15 +42,6 @@ const Rail: ClientModule<Props, State> = (props, surface) => {
       </Box>
     )
   }
-
-  // Each cell belongs to the branch whose mark is nearest: packets flow only along a running
-  // child's stretch, and a finished child's stretch stays still. With no marks, the whole line flows.
-  const owner = (i: number) => {
-    let best: Mark | null = null
-    for (const m of marks) if (!best || Math.abs(m.at - i) < Math.abs(best.at - i)) best = m
-    return best
-  }
-  const flows = cells.map((_, i) => owner(i)?.active ?? true)
 
   // A comet every 24 cells, moving left to right on the wire itself: a 2-cell head drawn thick
   // and bold, then a 3-cell trail in the line's own glyph, fading (bright, then faint) into the
@@ -71,15 +53,11 @@ const Rail: ClientModule<Props, State> = (props, surface) => {
       if (head - d >= 0 && head - d < width) level.set(head - d, lv)
     })
   }
-  const markAt = new Map(marks.map(m => [m.at, m]))
   // Runs, not cells: consecutive cells of one level share a Text, a handful of nodes per frame.
-  // A running child's mark is always bright and keeps its glyph under the comet; a finished
-  // child's mark is dim and no comet covers it.
   const runs: { text: string; lv: Level }[] = []
   cells.forEach((ch, i) => {
-    const mark = markAt.get(i)
-    const lv: Level = mark ? (mark.active ? 'head' : 'rest') : flows[i] ? level.get(i) ?? 'rest' : 'rest'
-    const glyph = !mark && lv === 'head' ? '━' : ch
+    const lv: Level = level.get(i) ?? 'rest'
+    const glyph = lv === 'head' ? '━' : ch
     const last = runs[runs.length - 1]
     if (last && last.lv === lv) last.text += glyph
     else runs.push({ text: glyph, lv })
