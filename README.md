@@ -62,12 +62,12 @@ https://github.com/user-attachments/assets/9ad0fcc3-c81c-427a-a743-f7b6c49f5885
 | **main** | model, effort, permission mode, request count; a context gauge with compactions (⟲); the first two rate-limit windows when your plan reports them, and the session's cost under `cost: on` | `turn.step`, `session.measure`, `session.compact`, `$.session.usage()` |
 | **architect** | consults on a timeline, whether one is running, how long the last took; optionally the moment of each consult; the first line of a subagent architect's advice | a spawn of a matching agent type, or a matching server tool in the assistant's rows |
 | **gate** | one cell per permission check: green allowed without asking, blue decided by the auto-mode classifier or you and then run, amber pending, red ✗ denied, dim if made inside a subagent. Totals, and a drill-down per tool family with credentials masked | `tool.check`, settled by the `tool.call` around it |
-| **agents** | a card per agent, one under the other, every one kept (the latest 24), 5 rows each: the task; its type and model (`opus`, `sonnet`, `haiku`, or the model's name), with a review agent's verdict at the right end (`BLOQUANT` in red, `MINEUR` in amber, `OK` in green); a gauge of its context against its window (`ctx ▰▰▰▱▱▱▱▱ 38%`, `~` when the window is inferred, amber from 70 %, red past 90 %), output, steps and its own compactions (⟲); its state with a running clock, `max_tokens` in red; the messages it received and sent (`✉ 2 in · 1 out`), its border flashing amber for 2.5 s after one. An ended agent that a message resumes runs again. The cards hang off one trunk that starts under the header, a branch (`├─`, the last `└─`) on each card's top row. Sub-agents sit right under the agent that spawned them, at any depth: one level further along the trunk, `↳ parent` beside the model when it fits, the parent in the agent pane's summary. A card's title opens the agent pane | `agent.spawn` (with its `parentAgentId`), `turn.step`, `tool.call`, `turn.complete`, `session.send`, `session.receive`, `session.compact`, `session.measure` |
+| **agents** | a card per agent, one under the other, every one kept (the latest 24), 5 rows each: the task; its type and model (`opus`, `sonnet`, `haiku`, or the model's name), with a review agent's verdict at the right end (`BLOQUANT` in red, `MINEUR` in amber, `OK` in green); a gauge of its context against its window (`ctx ▰▰▰▱▱▱▱▱ 38%`, `~` when the window is inferred, amber from 70 %, red past 90 %), output, steps and its own compactions (⟲); its state with a running clock, `max_tokens` in red; the messages it received and sent (`✉ 2 in · 1 out`), its border flashing amber for 2.5 s after one. An ended agent that a message resumes runs again. The cards hang off one trunk that starts under the header, a branch (`├─`, the last `└─`) on each card's top row. Sub-agents sit right under the agent that spawned them, at any depth: one level further along the trunk, `↳ parent` beside the model when it fits, the parent in the agent view's summary. A card's title opens the agent view | `agent.spawn` (with its `parentAgentId`), `turn.step`, `tool.call`, `turn.complete`, `session.send`, `session.receive`, `session.compact`, `session.measure` |
 | **loops** | model loops that match no card: workflow agents, compactions, memory forks | `turn.step` ids no card claims |
 | **receipt** | the running turn, or the last one: duration, agents, edits, errors, and the cost added under `cost: on` | `turn.start`, `turn.complete` |
 | **log** | prompts, spawns, completions, verdicts, messages between agents (`main → <task> · « … »`, in amber), compactions, consults, edits, errors and denials; filtered to one agent while you view its transcript | all of the above |
 
-**The agent pane.** A click on a card's title, or its hotkey, opens a second pane, `Agent · <task>`, as a tab beside Flightdeck: that agent's whole conversation. Each message under `▶ user` or `◆ assistant`, the text wrapped; each tool call on one line (`⚒ Bash → git status`, `✗` and red when it failed) with the first 3 lines of its result and `… (+N lines)`; credentials masked. A long conversation shows its newest 400 messages and 60 000 characters under `… N earlier messages`; one message too big on its own shows its latest tool calls under `… (+N tool calls)`. While the agent runs the pane reads it again at most once a second, and keeps the end in view unless you scroll up (scroll back to the end to follow again). `i` shows the card's summary above it: the full task, its parent, the last 3 tool calls, the start of its answer. Another card's title switches the same pane to that agent; `Esc` closes it. For an ended agent the session no longer serves, it reads the agent's saved transcript instead (`· from the saved transcript`), or says why it can't (`transcript unavailable: …`).
+**The agent view.** A click on a card's title, or its hotkey, turns the Flightdeck pane to that agent's whole conversation, in place of the dashboard. Clawd stays at the top; under him a row of controls, `b: back`, `p: ‹ prev`, `n: next ›` and `i: summary ▸`, then the heading, `Agent · <task> · ◐ running · sonnet` (the task cut first when the pane is narrow). Each message under `▶ user` or `◆ assistant`, the text wrapped; each tool call on one line (`⚒ Bash → git status`, `✗` and red when it failed) with the first 3 lines of its result and `… (+N lines)`; credentials masked. A long conversation shows its newest 400 messages and 60 000 characters under `… N earlier messages`; one message too big on its own shows its latest tool calls under `… (+N tool calls)`. While the agent runs the view reads it again at most once a second, and keeps the end in view unless you scroll up (scroll back to the end to follow again). `i` shows the card's summary above it: the full task, its parent, the last 3 tool calls, the start of its answer. `p` and `n` show the agent before or after it in the cards' order (each sub-agent right after its parent), dim at either end; `b` goes back to the dashboard, at its top. An agent whose card leaves the list (past the latest 24) takes the pane back to the dashboard too. The inline summary (`mini`) never shows the agent view: it stays the summary, and the docked pane shows the agent again. For an ended agent the session no longer serves, it reads the agent's saved transcript instead (`· from the saved transcript`), or says why it can't (`transcript unavailable: …`).
 
 Connectors animate only while work flows: a turn is running, an agent is running, or a consult is open. On the agents' trunk a comet runs down to each running agent's card and out along its branch; an ended agent's branch stays dim, and so does its card's border. Panels with nothing to show take no room, so a session without subagents shows just the main box and the log.
 
@@ -78,7 +78,7 @@ Clawd, Claude Code's own mascot, stands centred at the top of the pane in his ow
 | Command | Does |
 | --- | --- |
 | `/flightdeck` | open the pane |
-| `/flightdeck close` | close it, and the agent pane |
+| `/flightdeck close` | close it; it opens again on the dashboard |
 | `/flightdeck reset` | clear agents, checks, consults, log and the turn (cost, rate limits and compactions stay) |
 | `/flightdeck layout auto\|compact\|wide\|mini` | override the layout for this session |
 
@@ -86,15 +86,20 @@ Focus the pane with `ctrl+x tab`, then:
 
 | Key | Does |
 | --- | --- |
-| `1` to `9` | open one of the first nine agents in the agent pane, its whole conversation (a click on any card's title does too) |
+| `1` to `9` | show one of the first nine agents' whole conversation in the pane (a click on any card's title does too) |
 | `f` `s` `o` | open the gate's file / shell / other drill-down: the last 5 checks and their verdicts |
 
-In the agent pane:
+In the agent view:
 
 | Key | Does |
 | --- | --- |
+| `b` | back to the dashboard |
+| `p` `n` | the previous or next agent, in the cards' order |
 | `i` | show or hide the card's summary: its full task, parent, last 3 tool calls, start of its answer |
-| `Esc` | close the agent pane |
+
+Hotkeys take one digit or one lowercase letter, so prev and next are `p` and `n`, not `[` and `]`.
+
+**Why not a second pane.** Up to 0.8.0 the conversation opened in its own pane, `Agent · <task>`, which stayed behind Flightdeck until you clicked its tab: a plugin's `$.ui.open({ focus })` is a request, refused while the pane you hold keeps the keys, and the pane whose card you just pressed holds them. No other call brings a pane to the front, so the conversation now opens in the pane you are already looking at.
 
 `/clear` resets the pane along with the conversation.
 
@@ -120,11 +125,12 @@ Flightdeck only watches. Every hook passes its event on unchanged: it never deni
 | your prompts' first 70 characters, for the log | `turn.start` |
 | context, cost and rate-limit readings | `session.measure`, `$.session.usage()` |
 | advisor tool calls in the assistant's responses (their content is encrypted) | `session.append` |
-| the conversation of the agent you open in the agent pane: its messages, tool calls and the start of their results, credentials masked; the newest 400 messages and 60 000 characters | `$.session.messages({ agentId })`, read when you open it, then while it runs |
+| the conversation of the agent you open in the agent view: its messages, tool calls and the start of their results, credentials masked; the newest 400 messages and 60 000 characters | `$.session.messages({ agentId })`, read when you open it, then while it runs |
 | for an ended agent the session no longer serves: its saved transcript, one file of at most 4 MiB, read only | `$.fs.stat`, `$.fs.read`; its path from `classic.SubagentStop` (`agent_transcript_path`), else from the `transcript_path` that `classic.UserPromptSubmit` and `classic.SubagentStop` carry, else from `$.env.get` (`CLAUDE_CONFIG_DIR`, `HOME`), `$.session.cwd()` and `$.session.id()` |
-| whether you scrolled the agent pane away from its end | `ui.scroll` |
+| whether you scrolled the agent view away from its end | `ui.scroll` on the Flightdeck pane, only while an agent is in view |
+| that the Flightdeck pane closed, to leave the agent view | `ui.close` on the Flightdeck pane |
 
-What it keeps: short summaries (a tool name plus a path or command, the start of a message, with credentials masked) in session state, which ends with the session; while the agent pane is open, that agent's conversation too, masked and cut to the budget above, dropped when the pane closes. It makes **no** network requests, runs no processes, writes no files, reads one only for the agent pane's fallback (an agent's saved transcript), stores nothing across sessions, and calls no model. `claude plugin validate .` prints exactly what it hooks and calls.
+What it keeps: short summaries (a tool name plus a path or command, the start of a message, with credentials masked) in session state, which ends with the session; while an agent is in view, its conversation too, masked and cut to the budget above, dropped when you go back to the dashboard or the pane closes. It makes **no** network requests, runs no processes, writes no files, reads one only for the agent view's fallback (an agent's saved transcript), stores nothing across sessions, and calls no model. `claude plugin validate .` prints exactly what it hooks and calls.
 
 ## What is inferred, not measured
 
@@ -136,11 +142,11 @@ What it keeps: short summaries (a tool name plus a path or command, the start of
 - **Messages are matched in order.** A send and its delivery share no id: a delivery completes the latest send to that recipient, else the latest whose recipient could not be resolved, else the latest. A send that waits more than 60 s for its delivery (one to another session, say) is dropped. A recipient is resolved by agent id, by the name the agent list gives, or by the one card spawned under that name.
 - **A resumed agent.** No event says an ended agent was resumed: a message delivered to it, or a new model request of its own, sets its card running again.
 - **The flash** ends with a redraw 2.5 s after the message; a surface that does not redraw then shows it until its next drawing.
-- **The agent pane's fallback path.** The path `SubagentStop` names, and the folder beside the main transcript, are the engine's own words. Before either is known (right after a reload, before your next prompt), the path is rebuilt as `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<working directory, every character but a letter or digit as ->/<session id>/subagents/agent-<id>.jsonl`, a layout no API documents.
-- **Following the agent pane's end.** The pane follows the end until you scroll away from it, and again once you scroll back to the last row or open an agent; it reads at most once a second, so it can lag that much behind the agent.
+- **The agent view's fallback path.** The path `SubagentStop` names, and the folder beside the main transcript, are the engine's own words. Before either is known (right after a reload, before your next prompt), the path is rebuilt as `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<working directory, every character but a letter or digit as ->/<session id>/subagents/agent-<id>.jsonl`, a layout no API documents.
+- **Following the agent view's end.** The view follows the end until you scroll away from it, and again once you scroll back to the last row or open an agent; it reads at most once a second, so it can lag that much behind the agent.
 - **Other loops** can't tell a workflow agent from a compaction fork; both are model loops no card claims.
 - **A background agent's first step** can arrive before its card exists, so its usage may show one step late.
-- **Top-level placement in the agent tree.** Who spawned whom is measured (`parentAgentId`). But an agent whose parent has no card among those drawn (an architect, or an agent dropped from the list or not shown) is drawn at the top level, beside the main loop's own agents. Its summary in the agent pane still names the real parent: the architect, or `agent` when no card is left. Beside the cards, the trunk column is at most 6 cells wide. Counting the main loop as level 0, the agents it spawned are at level 1, their children at level 2 and theirs at level 3, each one level further along the trunk. An agent deeper than level 3 is drawn at level 3, keeping its own branch (for instance `│ │ └─`) on that level's line, with the levels between omitted; its summary names its real parent.
+- **Top-level placement in the agent tree.** Who spawned whom is measured (`parentAgentId`). But an agent whose parent has no card among those drawn (an architect, or an agent dropped from the list or not shown) is drawn at the top level, beside the main loop's own agents. Its summary in the agent view still names the real parent: the architect, or `agent` when no card is left. Beside the cards, the trunk column is at most 6 cells wide. Counting the main loop as level 0, the agents it spawned are at level 1, their children at level 2 and theirs at level 3, each one level further along the trunk. An agent deeper than level 3 is drawn at level 3, keeping its own branch (for instance `│ │ └─`) on that level's line, with the levels between omitted; its summary names its real parent.
 
 ## Configure
 
@@ -184,7 +190,7 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 | [`hooks/core.ts`](hooks/core.ts) | every reducer, formatter and layout rule as pure functions, so behaviour is testable directly |
 | [`hooks/rail.tsx`](hooks/rail.tsx), [`hooks/spine.tsx`](hooks/spine.tsx), [`hooks/elapsed.tsx`](hooks/elapsed.tsx), [`hooks/clawd.tsx`](hooks/clawd.tsx) | surface modules: animated connectors, the cards' trunk, live clocks and Clawd, each redrawing only itself on the surface's own frame clock |
 | [`types/index.d.ts`](types/index.d.ts) | the state contract |
-| [`tests/`](tests) | 81 tests: pure behaviour, plus drawings mounted on every surface at 40–120 columns |
+| [`tests/`](tests) | 87 tests: pure behaviour, plus drawings mounted on every surface at 40–120 columns |
 
 State lives in `$.state` atoms. Every read is merged over defaults, so a missing or older field never breaks the pane; an update that changes the state's shape may still reset its counters once. New to mods? Start with [Claude Code mods](https://claude.com/blog/claude-code-mods) and [Getting started with Claude Code mods](https://claude.dev/blog/getting-started-with-claude-code-mods/).
 

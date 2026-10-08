@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1
+
+- The agent's conversation opens in the Flightdeck pane itself, in place of the dashboard, instead of in a second pane. The second pane stayed behind Flightdeck until you clicked its tab: the API cannot bring a pane to the front. `$.ui.open({ focus })` is a request, refused while the pane the person holds keeps the keys, and the pane whose card was just pressed holds them; nothing else raises a pane. The `flightdeck-agent` pane is gone.
+- The agent view: Clawd at the top, as on the dashboard; a row of controls, `b: back`, `p: ‹ prev`, `n: next ›` (the agents in the cards' order, dim at either end) and `i: summary`; the heading `Agent · <task> · ◐ running · sonnet`, the task cut first when the pane is narrow; then the summary and the conversation, drawn as before. Hotkeys take one digit or lowercase letter only, so prev and next are `p` and `n`, not `[` and `]`.
+- `b` goes back to the dashboard, at its top, and drops the conversation; so do `/flightdeck close`, `/flightdeck reset`, the pane closing and the end of the session. An agent whose card leaves the list takes the pane back to the dashboard. `/flightdeck reset` no longer leaves a read of the agent's conversation running.
+- Following the end works on the Flightdeck pane, only while an agent is in view. The inline summary (`mini`) never shows the agent view.
+- 87 tests.
+
 ## 0.8.0
 
 - The agent pane: a click on a card's title, or its hotkey (`1` to `9`), opens a second pane, `flightdeck-agent`, titled `Agent · <task>`, focused, as a tab beside Flightdeck; `Esc` closes it, another card switches it to that agent. It shows the agent's whole conversation from `$.session.messages({ agentId })`: `▶ user` and `◆ assistant`, the text wrapped, each tool call on one line (`⚒ Bash → …`, `✗` in red on an error) with the first 3 lines of its result and `… (+N lines)`, credentials masked, as plain text. Only the newest 400 messages and 60 000 characters are kept, under `… N earlier messages`; one message's text is cut at 6 000 characters, and a message too big on its own gives up its earliest tool calls (`… (+N tool calls)`), counted as stored.
