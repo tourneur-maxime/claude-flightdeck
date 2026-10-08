@@ -110,6 +110,8 @@ export type View = {
   layout: Layout | null
   /** The agent whose conversation the pane shows instead of the dashboard, or null. */
   agent: string | null
+  /** The swimlane opened on its agent's card, or null. */
+  lane: string | null
 }
 
 /** One tool call of an agent's conversation, as the agent view draws it; redacted. */

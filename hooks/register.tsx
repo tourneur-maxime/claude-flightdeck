@@ -18,9 +18,9 @@ import {
   agentHeading,
   agentTree,
   agentsRows,
+  laneHeights,
   applyStep,
   bucketOf,
-  CARD_ROWS,
   cardKind,
   cardMail,
   cardSpine,
@@ -92,6 +92,7 @@ import {
   verdictOf,
   windowFor,
 } from './core'
+import { clawdSvg } from './clawd-svg'
 import type { ClawdSpan, Config, Panel, PendingMessage } from './core'
 
 const PANE = 'flightdeck'
@@ -457,20 +458,26 @@ async function requestFeed($: EngineInterface, id: string) {
 }
 
 /**
- * A card pressed (or prev, next): the pane turns to that agent's conversation, read now. No second
- * pane: one opened beside Flightdeck stays behind it, as a pressed Button's pane keeps the focus
- * an `open({ focus })` asks for. Never rejects.
+ * A card's `inspect` pressed (or prev, next): the pane turns to that agent's conversation, read
+ * now, its top in view. No second pane: one opened beside Flightdeck stays behind it, as a
+ * pressed Button's pane keeps the focus an `open({ focus })` asks for. The pressed element is
+ * gone from the drawing, so the focus ring is put on `back`, where b, p, n and i keep working.
+ * Never rejects.
  */
 async function openAgent($: EngineInterface, card: AgentCard) {
   stopFeed()
   const epoch = feedWatch.epoch
   feedWatch.agent = card.id
-  feedWatch.follow = true
+  // From the top: the end is followed again once the person scrolls down to it.
+  feedWatch.follow = false
   // Its heading and a "reading" line at once, not the previous agent's conversation.
   const reading: AgentFeed = { agentId: card.id, entries: [], omitted: 0, readAt: 0, source: 'session', deny: null }
   await update($, agentFeed, () => reading).catch(() => undefined)
   await update($, view, v => ({ ...normalize(DEFAULT_VIEW, v), agent: card.id })).catch(() => undefined)
+  await $.ui.scroll({ in: PANE, to: 'start' }).catch(() => undefined)
+  await $.ui.focus({ requestId: PANE, key: 'agent-back' }).catch(() => undefined)
   await refreshFeed($, card.id, epoch)
+  if (epoch === feedWatch.epoch) await $.ui.scroll({ in: PANE, to: 'start' }).catch(() => undefined)
 }
 
 /**
@@ -1081,12 +1088,19 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // ---- agents: a card per agent, one under the other, off one trunk
+    // ---- agents: a swimlane per agent off one trunk; a lane pressed opens its agent's card under it
     const verdictColors: Record<ReviewVerdict, string> = { BLOQUANT: C.warn, MINEUR: C.amber, OK: C.gate }
     const statusColor = (c: AgentCard) => (c.status === 'failed' ? C.warn : c.status === 'done' ? C.gate : C.agent)
     const glyph = (c: AgentCard) => (c.status === 'running' ? '◐' : c.status === 'done' ? '✓' : c.status === 'failed' ? '✗' : '■')
-    // A card's title turns the pane to its agent's conversation.
+    // The card's `inspect` turns the pane to its agent's conversation.
     const openOnPress = (c: AgentCard) => () => openAgent($, c)
+    // A lane's title opens its card, or closes it when it is the one open.
+    const laneOnPress = (id: string) => () =>
+      update($, view, x => {
+        const y = normalize(DEFAULT_VIEW, x)
+        return { ...y, lane: y.lane === id ? null : id }
+      })
+    const openLane = v.lane && cards.some(c => c.id === v.lane) ? v.lane : null
 
     const agentsPanel = (w: number) => {
       // A frame like the other panels', in the agents' colour: everything inside is laid out on
@@ -1099,7 +1113,7 @@ export const register: Register = (on, options) => {
       const iw = Math.max(1, w - 4)
       // The title truncates rather than run past the frame; the hotkey hint shows only beside it.
       const title = `agents · ${running.length} running · ${cards.length} total`
-      const hint = cards.length > 0 ? `1-${Math.min(cards.length, 9)} open` : ''
+      const hint = cards.length > 0 ? `1-${Math.min(cards.length, 9)} card` : ''
       const header = (
         <Box justifyContent="space-between" width={iw}>
           <Text color={C.agent} bold wrap="truncate">
@@ -1111,13 +1125,28 @@ export const register: Register = (on, options) => {
       if (cards.length === 0) {
         return frame(header, <Text color={C.faint}>no subagents yet</Text>)
       }
-      // Every card kept, in the tree's order (each sub-agent right after its parent), beside one
-      // trunk that starts under the header: CARD_ROWS rows of it beside each card, the branch on
-      // the card's top row. The cards take the rest of the inner width.
+      // Every agent kept, in the tree's order (each sub-agent right after its parent), one row each
+      // beside one trunk that starts under the header; the lane opened takes its card's rows too.
       const tree = agentTree(cards)
-      const spine = cardSpine(tree.map(row => ({ depth: row.depth, active: row.card.status === 'running' })))
-      const cardW = Math.max(1, iw - spine.width)
-      const cw = Math.max(1, cardW - 4)
+      const heights = laneHeights(
+        tree.map(row => row.card.id),
+        openLane,
+      )
+      const spine = cardSpine(
+        tree.map(row => ({ depth: row.depth, active: row.card.status === 'running' })),
+        heights,
+      )
+      const owners = heights.flatMap((h, i) => Array.from({ length: h }, () => i))
+      const laneW = Math.max(1, iw - spine.width)
+      const cw = Math.max(1, laneW - 4)
+      // A lane: ` ◐ `, its title, its time on the shared axis, its clock (5 cells at most).
+      const titleW = Math.max(8, Math.min(32, Math.floor((laneW - 10) * 0.45)))
+      const barW = Math.max(4, laneW - 3 - titleW - 2 - 5)
+      const geo = timeBars(
+        tree.map(row => row.card),
+        now,
+        barW,
+      )
       const trunk = motion ? (
         <els.Client
           key="spine"
@@ -1129,72 +1158,109 @@ export const register: Register = (on, options) => {
       ) : (
         <Box flexDirection="column" width={spine.width} flexShrink={0}>
           {spine.rows.map((row, k) => {
-            const c = tree[Math.floor(k / CARD_ROWS)]?.card
+            const c = tree[owners[k] ?? -1]?.card
             return <Text color={c ? statusColor(c) : C.faint}>{row.prefix}</Text>
           })}
         </Box>
       )
+      // The card of the lane opened: its title and `inspect`, type and model (and a review
+      // agent's verdict), context, state and clock, messages. CARD_ROWS tall, as the trunk counts.
+      const card = (c: AgentCard, parent: AgentCard | null) => {
+        const isViewed = viewed === c.id
+        const isMax = c.lastStop === 'max_tokens'
+        // A message just sent or received: the border in amber for FLASH_MS.
+        const flash = isFlashing(c, now)
+        const stats = cardStatsRow(c, windowFor(c.model, wins, u.window), cw)
+        const inspect = 'inspect ›'
+        return (
+          <Box
+            key={`agent-${c.id}`}
+            flexDirection="column"
+            borderStyle={isViewed ? 'double' : 'round'}
+            borderColor={isMax ? C.warn : flash ? C.amber : C.agent}
+            borderDimColor={c.status !== 'running' && !isViewed && !flash}
+            width={laneW}
+            paddingX={1}
+            flexShrink={0}
+          >
+            {/* Cut in cells, then held to one row: a wide title never wraps the card taller. */}
+            <Box key={`card-title-${c.id}`} width={cw} height={1} overflow="hidden" justifyContent="space-between">
+              <Text bold wrap="truncate">
+                {shortenCells(cardTitle(c), Math.max(1, cw - cellWidth(inspect) - 1))}
+              </Text>
+              <Box flexShrink={0} marginLeft={1}>
+                <Button key={`card-inspect-${c.id}`} plain label={inspect} onPress={openOnPress(c)} />
+              </Box>
+            </Box>
+            {/* A row of its own: its type and model, and at its right end a review agent's verdict. */}
+            <Box key={`card-kind-${c.id}`} justifyContent="space-between" width={cw}>
+              <Text color={C.dim} wrap="truncate">
+                {cardKind(c, parent, c.verdict ? cw - cellWidth(c.verdict) - 1 : cw)}
+              </Text>
+              {c.verdict ? (
+                <Box key={`card-verdict-${c.id}`} flexShrink={0}>
+                  <Text color={verdictColors[c.verdict]} bold={c.verdict === 'BLOQUANT'}>
+                    {c.verdict}
+                  </Text>
+                </Box>
+              ) : null}
+            </Box>
+            {/* Its context against its window (inferred: `~`), output, steps and compactions. */}
+            <Box key={`card-stats-${c.id}`} width={cw} height={1} overflow="hidden">
+              <Text dimColor>{stats.lead}</Text>
+              {stats.on ? <Text color={stats.level === 'full' ? C.warn : stats.level === 'high' ? C.amber : C.agent}>{stats.on}</Text> : null}
+              {stats.off ? <Text color={C.faint}>{stats.off}</Text> : null}
+              {stats.tail ? <Text dimColor>{stats.tail}</Text> : null}
+              {stats.comp ? <Text color={C.amber}>{stats.comp}</Text> : null}
+            </Box>
+            <Box>
+              {/* The clock takes at most 5 cells (12h59) after the state. */}
+              <Text color={isMax ? C.warn : statusColor(c)}>{shortenCells(`${glyph(c)} ${isMax ? 'max_tokens' : c.status}`, Math.max(1, cw - 6)) + ' '}</Text>
+              <Box flexShrink={0}>{clock(`card-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}</Box>
+            </Box>
+            <Box key={`card-mail-${c.id}`} width={cw}>
+              <Text color={flash ? C.amber : C.dim} wrap="truncate">
+                {shortenCells(cardMail(c), cw)}
+              </Text>
+            </Box>
+          </Box>
+        )
+      }
       return frame(
         header,
         <Box>
           {trunk}
-          <Box flexDirection="column" width={cardW}>
+          <Box flexDirection="column" width={laneW}>
             {tree.map(({ card: c, parent }, i) => {
+              const gm = geo[i]
               const isViewed = viewed === c.id
+              const isOpen = openLane === c.id
               const isMax = c.lastStop === 'max_tokens'
-              // A message just sent or received: the border in amber for FLASH_MS.
               const flash = isFlashing(c, now)
-              const stats = cardStatsRow(c, windowFor(c.model, wins, u.window), cw)
-              // Digits 1-9 only: the cards after the ninth expand by a press.
+              // Digits 1-9 only: the lanes after the ninth open by a press.
               const hot = i < 9 ? { hotkey: String(i + 1) } : {}
-              // Five rows between the borders, each one row high (truncated), so a card is
-              // CARD_ROWS tall, as the trunk beside it counts.
+              const color = isMax ? C.warn : statusColor(c)
               return (
-                <Box
-                  key={`agent-${c.id}`}
-                  flexDirection="column"
-                  borderStyle={isViewed ? 'double' : 'round'}
-                  borderColor={isMax ? C.warn : flash ? C.amber : C.agent}
-                  borderDimColor={c.status !== 'running' && !isViewed && !flash}
-                  width={cardW}
-                  paddingX={1}
-                  flexShrink={0}
-                >
-                  {/* Cut in cells, then held to one row: a wide title never wraps the card taller. */}
-                  <Box key={`card-title-${c.id}`} width={cw} height={1} overflow="hidden">
-                    <Button key={`card-${c.id}`} plain {...hot} label={shortenCells(cardTitle(c), cw - (i < 9 ? 3 : 0))} onPress={openOnPress(c)} />
+                <Box key={`lane-${c.id}`} flexDirection="column" width={laneW} flexShrink={0}>
+                  {/* One row, whatever the title: cut in cells, then held to it. */}
+                  <Box key={`lane-row-${c.id}`} width={laneW} height={1} overflow="hidden">
+                    {/* A message just sent or received: the glyph in amber for FLASH_MS. */}
+                    <Text color={flash ? C.amber : color} bold={isViewed || isOpen}>{` ${isOpen ? '▾' : isViewed ? '▶' : glyph(c)} `}</Text>
+                    <Box key={`lane-title-${c.id}`} width={titleW} flexShrink={0} overflow="hidden">
+                      <Button
+                        key={`lane-${c.id}-title`}
+                        plain
+                        {...hot}
+                        label={shortenCells(cardTitle(c), Math.max(1, titleW - (i < 9 ? 3 : 0)))}
+                        onPress={laneOnPress(c.id)}
+                      />
+                    </Box>
+                    <Text color={C.faint}>{' ' + '·'.repeat(gm?.before ?? 0)}</Text>
+                    <Text color={color}>{'━'.repeat(gm?.bar ?? 1)}</Text>
+                    <Text color={C.faint}>{'·'.repeat(gm?.after ?? 0) + ' '}</Text>
+                    <Box flexShrink={0}>{clock(`lane-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}</Box>
                   </Box>
-                  {/* A row of its own: its type and model, and at its right end a review agent's verdict. */}
-                  <Box key={`card-kind-${c.id}`} justifyContent="space-between" width={cw}>
-                    <Text color={C.dim} wrap="truncate">
-                      {cardKind(c, parent, c.verdict ? cw - cellWidth(c.verdict) - 1 : cw)}
-                    </Text>
-                    {c.verdict ? (
-                      <Box key={`card-verdict-${c.id}`} flexShrink={0}>
-                        <Text color={verdictColors[c.verdict]} bold={c.verdict === 'BLOQUANT'}>
-                          {c.verdict}
-                        </Text>
-                      </Box>
-                    ) : null}
-                  </Box>
-                  {/* Its context against its window (inferred: `~`), output, steps and compactions. */}
-                  <Box key={`card-stats-${c.id}`} width={cw} height={1} overflow="hidden">
-                    <Text dimColor>{stats.lead}</Text>
-                    {stats.on ? <Text color={stats.level === 'full' ? C.warn : stats.level === 'high' ? C.amber : C.agent}>{stats.on}</Text> : null}
-                    {stats.off ? <Text color={C.faint}>{stats.off}</Text> : null}
-                    {stats.tail ? <Text dimColor>{stats.tail}</Text> : null}
-                    {stats.comp ? <Text color={C.amber}>{stats.comp}</Text> : null}
-                  </Box>
-                  <Box>
-                    {/* The clock takes at most 5 cells (12h59) after the state. */}
-                    <Text color={isMax ? C.warn : statusColor(c)}>{shortenCells(`${glyph(c)} ${isMax ? 'max_tokens' : c.status}`, Math.max(1, cw - 6)) + ' '}</Text>
-                    <Box flexShrink={0}>{clock(`card-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}</Box>
-                  </Box>
-                  <Box key={`card-mail-${c.id}`} width={cw}>
-                    <Text color={flash ? C.amber : C.dim} wrap="truncate">
-                      {shortenCells(cardMail(c), cw)}
-                    </Text>
-                  </Box>
+                  {isOpen ? card(c, parent) : null}
                 </Box>
               )
             })}
@@ -1253,7 +1319,7 @@ export const register: Register = (on, options) => {
       (showArchitect ? 6 : 0) +
       6 +
       (v.gateOpen ? 5 : 0) +
-      (panels.includes('agents') ? agentsRows(cards.length) : 0) +
+      (panels.includes('agents') ? agentsRows(cards.length, openLane !== null) : 0) +
       (lp.length ? 1 : 0) +
       3 +
       (showMascot ? 3 : 0)
@@ -1421,9 +1487,15 @@ export const register: Register = (on, options) => {
         <Text color={CLAWD_COLORS.body}>{sp.text}</Text>
       )
     // His own 3 rows, first in the tree: the pane asks for no more rows than it draws.
+    // The remote surfaces (the desktop app, the editor, mobile) draw text in a font that does not
+    // join block glyphs: there he is an SVG of the same glyphs, still.
+    const SvgEl = e.surface !== 'terminal' && 'Svg' in els ? els.Svg : null
+    const svgClawd = SvgEl ? clawdSvg(CLAWD.default, CLAWD_COLORS.body, CLAWD_COLORS.eyes) : null
     const mascot = showMascot ? (
       <Box justifyContent="center" width={W}>
-        {motion ? (
+        {SvgEl && svgClawd ? (
+          <SvgEl key="clawd-svg" source={svgClawd.source} alt="Clawd" width={svgClawd.width} height={svgClawd.height} />
+        ) : motion ? (
           <els.Client
             key="clawd"
             module="./clawd.tsx"
@@ -1563,6 +1635,13 @@ export const register: Register = (on, options) => {
               {`read ${fmtClock(f.readAt)}${f.source === 'transcript' ? ' · from the saved transcript' : ''}`}
             </Text>
           ) : null}
+          {/* Back at the end too, for a long conversation read to its bottom (no hotkey: b is the top one's). */}
+          <Text color={C.faint}>{'─'.repeat(W)}</Text>
+          <Box key="agent-nav-bottom" width={W} columnGap={1}>
+            <Button key="agent-back-bottom" plain label="‹ back" onPress={() => closeAgentView($, true)} />
+            <Button key="agent-prev-bottom" plain label="‹ prev" dimColor={!hasPrev} onPress={step(-1)} />
+            <Button key="agent-next-bottom" plain label="next ›" dimColor={!hasNext} onPress={step(1)} />
+          </Box>
         </Box>
       )
     }

@@ -10,6 +10,7 @@ import {
   agentHeading,
   agentTree,
   agentsRows,
+  laneHeights,
   applyStep,
   cardKind,
   cardMail,
@@ -193,8 +194,13 @@ test('layout math: the desktop time bars share one axis, the log gets 4-8 rows, 
   expect(b?.before).toBe(10)
   expect((b?.before ?? 0) + (b?.bar ?? 0) + (b?.after ?? 0)).toBe(20)
   expect([logRows(10, 40), logRows(50, 40), logRows(200, 40)]).toEqual([4, 7, 8])
-  // The agents section: its frame and title, then 7 rows a card, for the 24 cards kept at most.
-  expect([agentsRows(0), agentsRows(1), agentsRows(5), agentsRows(24), agentsRows(30)]).toEqual([0, 10, 38, 171, 171])
+  // The agents section: its frame and title, then a row a swimlane for the 24 cards kept at most,
+  // and 7 more under the lane opened on its card.
+  expect([agentsRows(0), agentsRows(1), agentsRows(5), agentsRows(24), agentsRows(30)]).toEqual([0, 4, 8, 27, 27])
+  expect([agentsRows(0, true), agentsRows(5, true)]).toEqual([0, 15])
+  expect(laneHeights(['a', 'b', 'c'], 'b')).toEqual([1, 8, 1])
+  expect(laneHeights(['a', 'b'], null)).toEqual([1, 1])
+  expect(laneHeights(['a'], 'gone')).toEqual([1])
   expect(fitLegend([{ label: 'main' }, { label: 'agents' }, { label: 'architect' }], 20).map(x => x.label)).toEqual(['main', 'agents'])
   expect(limitLabel('five_hour')).toBe('5h')
   expect(prettyModel('claude-opus-5-5[1m]')).toBe('Opus 5.5 1M')
@@ -309,6 +315,25 @@ test('the cards trunk: 7 rows a card by default, the trunk alone for top-level c
   expect([deep.width, ...deep.rows.map(r => r.prefix)]).toEqual([6, '└─┬───', '  └─┬─', '    ├─', '    └─'])
   expect(lit(deep.rows)).toEqual(['###...', '..###.', '....#.', '....##'])
   expect(cardSpine([])).toEqual({ rows: [], width: 0 })
+})
+
+test('the swimlanes trunk: a row a lane, the opened lane\'s card rows under its branch, lit to a running agent below it', () => {
+  // a (its lane opened: 1 + 3 rows here), its child a1 running, then b.
+  const { rows } = cardSpine(
+    [
+      { depth: 0, active: false },
+      { depth: 1, active: true },
+      { depth: 0, active: false },
+    ],
+    [4, 1, 1],
+  )
+  expect(rows.map(r => r.prefix)).toEqual(['├─┬─', '│ │ ', '│ │ ', '│ │ ', '│ └─', '└───'])
+  // Which agent each row stands beside: a's 4 rows, then a1, then b.
+  expect(rows.map(r => r.active)).toEqual([false, false, false, false, true, false])
+  // From the trunk to a, down a's children line beside its card, out along a1's branch.
+  expect(lit(rows)).toEqual(['###.', '..#.', '..#.', '..#.', '..##', '....'])
+  // A height missing from the list counts one row.
+  expect(cardSpine([{ depth: 0, active: false }, { depth: 0, active: false }], [2]).rows.length).toBe(3)
 })
 
 test('text is measured in terminal cells: wide CJK and emoji take 2, combining marks 0; cut by whole code point', () => {
@@ -618,7 +643,7 @@ test('pastel keeps the fixed dark-terminal colours', { options: { palette: 'past
   await ui.unmount()
 })
 
-test('subagents become cards in a list, a card turns the pane to its agent, and the desktop adds a time axis', async ($, on) => {
+test('subagents become swimlanes, a lane opens its card, its inspect turns the pane to its agent, and the desktop adds a time axis', async ($, on) => {
   engine(on)
   const world = agentWorld(on)
   let n = 0
@@ -629,13 +654,15 @@ test('subagents become cards in a list, a card turns the pane to its agent, and 
 
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await ui.find({ text: /Write the parser/ })).toBeDefined()
+  expect(await ui.find({ key: 'agent-ag2' })).toBeUndefined() // a lane closed: no card
+  await openLane(ui, 'ag2')
   expect(textOf(await ui.find({ key: 'card-kind-ag2' }))).toBe('Explore · sonnet') // the model, always
   expect(await ui.find({ type: 'Svg' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /^Write the parser tests$/ })).toBeUndefined()
-  await ui.press({ key: 'card-ag1' })
+  await inspect(ui, 'ag1')
   expect(world.opened).toEqual([]) // no second pane: this one turns to the agent
   expect(textOf(await ui.find({ key: 'agent-heading' }))).toBe('Agent · Write the parser tests · ◐ running · sonnet')
-  expect(await ui.find({ key: 'card-ag2' })).toBeUndefined() // the cards give way to the conversation
+  expect(await ui.find({ key: 'lane-ag2-title' })).toBeUndefined() // the lanes give way to the conversation
   // The summary, on its `i` key, in the same pane.
   expect((await ui.find({ key: 'agent-summary' }))?.props.hotkey).toBe('i')
   expect(await ui.find({ key: 'agent-summary-box' })).toBeUndefined()
@@ -643,7 +670,8 @@ test('subagents become cards in a list, a card turns the pane to its agent, and 
   expect(await ui.find({ key: 'agent-summary-box' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^parent: main$/ })).toBeDefined()
   await ui.press({ key: 'agent-back' })
-  expect(await ui.find({ key: 'card-ag2' })).toBeDefined()
+  expect(await ui.find({ key: 'lane-ag2-title' })).toBeDefined()
+  expect(await ui.find({ key: 'agent-ag1' })).toBeDefined() // its lane still open on its card
   expect(await ui.find({ key: 'agent-heading' })).toBeUndefined()
   await ui.unmount()
 
@@ -651,8 +679,9 @@ test('subagents become cards in a list, a card turns the pane to its agent, and 
   await $.agent.spawn(spawn('general-purpose', 'Review the parser'))
   const desk = await $.ui.mount({ ...pane(64), surface: 'desktop' })
   expect(await desk.find({ text: /4 total/ })).toBeDefined()
-  expect((await desk.findAll({ type: 'Box' })).filter(b => /^agent-/.test(String(b.key))).length).toBe(4)
-  const svg = await desk.find({ type: 'Svg' })
+  expect((await desk.findAll({ type: 'Box' })).filter(b => /^lane-row-/.test(String(b.key))).length).toBe(4)
+  // Clawd is an SVG there too: the time axis is the other one.
+  const svg = (await desk.findAll({ type: 'Svg' })).find(x => x.props.alt !== 'Clawd')
   expect(svg?.props.alt).toBe('4 agents on a time axis')
   expect((String(svg?.props.source).match(/<rect /g) ?? []).length).toBe(4) // one bar per agent
   await desk.unmount()
@@ -746,7 +775,7 @@ test('with no architect anywhere, the panel, legend entry and status field stay 
   await ui.unmount()
 })
 
-test('a card per agent, in the tree order, each as wide as the frame leaves beside one trunk as tall as the cards', async ($, on) => {
+test('a lane per agent, in the tree order, each as wide as the frame leaves beside one trunk as tall as the lanes and the card opened', async ($, on) => {
   engine(on, 65_000)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `l${++n}` }))
@@ -762,25 +791,45 @@ test('a card per agent, in the tree order, each as wide as the frame leaves besi
   for (const [cols, w] of [[40, 40], [64, 64], [120, 59]] as const) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
     const iw = w - 4
-    const boxes = (await ui.findAll({ type: 'Box' })).filter(b => /^agent-/.test(String(b.key)))
-    expect(boxes.map(b => b.key)).toEqual(order.map(id => `agent-${id}`))
+    // Every lane closed: one row each, no card.
+    const rows = (await ui.findAll({ type: 'Box' })).filter(b => /^lane-row-/.test(String(b.key)))
+    expect(rows.map(b => b.key)).toEqual(order.map(id => `lane-row-${id}`))
+    expect((await ui.findAll({ type: 'Box' })).some(b => /^agent-/.test(String(b.key)))).toBe(false)
     const spine = await ui.find({ type: 'Client', key: 'spine' })
     const props = spine?.props.props as SpineProps
-    expect([spine?.props.width, spine?.props.height]).toEqual([4, 35]) // 7 rows a card
-    expect(props.rows.filter((_, k) => k % 7 === 0).map(r => r.prefix)).toEqual(['├─┬─', '│ └─', '├───', '├───', '└───'])
-    expect(props.rows.map(r => r.active)).toEqual([true, true, false, false, false].flatMap(a => Array.from({ length: 7 }, () => a)))
-    for (const b of boxes) {
-      expect(Number(b.props.width) + Number(spine?.props.width)).toBe(iw) // the frame's inner width, beside the trunk
-      expect([b.props.borderStyle, b.props.paddingX]).toEqual(['round', 1])
-      expect(b.props.borderDimColor).toBe(b.key !== 'agent-l1' && b.key !== 'agent-l3') // ended: dim
-      expect((b.children ?? []).filter(Boolean).length).toBe(5) // 5 rows between its borders: 7, as the trunk counts
+    expect([spine?.props.width, spine?.props.height]).toEqual([4, 5]) // a row a lane
+    expect(props.rows.map(r => r.prefix)).toEqual(['├─┬─', '│ └─', '├───', '├───', '└───'])
+    expect(props.rows.map(r => r.active)).toEqual([true, true, false, false, false])
+    for (const id of order) {
+      const lane = await ui.find({ key: `lane-${id}` })
+      expect(Number(lane?.props.width) + Number(spine?.props.width)).toBe(iw) // the frame's inner width, beside the trunk
+      const row = await ui.find({ key: `lane-row-${id}` })
+      expect([row?.props.width, row?.props.height, row?.props.overflow]).toEqual([lane?.props.width, 1, 'hidden'])
     }
-    for (const id of order) expect(textOf(await ui.find({ key: `card-kind-${id}` }))).toMatch(/^[\w-]+ · sonnet( · ↳ .+)?$/) // the model in short, the parent after it when it fits
-    expect((await ui.findAll({ type: 'Text', text: /^◐ running $/ })).length).toBe(2)
-    expect((await ui.findAll({ type: 'Text', text: /^✓ done $/ })).length).toBe(3)
-    const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('card-'))
-    expect(buttons.map(b => [b.key, b.props.hotkey])).toEqual(order.map((id, i) => [`card-${id}`, String(i + 1)]))
-    for (const b of buttons) expect(3 + String(b.props.label).length <= iw - 4 - 4).toBe(true) // `1: ` and the title, inside the card
+    expect((await ui.findAll({ type: 'Text', text: /^ ◐ $/ })).length).toBe(2)
+    expect((await ui.findAll({ type: 'Text', text: /^ ✓ $/ })).length).toBe(3)
+    const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('lane-'))
+    expect(buttons.map(b => [b.key, b.props.hotkey])).toEqual(order.map((id, i) => [`lane-${id}-title`, String(i + 1)]))
+    for (const id of order) {
+      const titleW = Number((await ui.find({ key: `lane-title-${id}` }))?.props.width)
+      expect(3 + cellWidth(String((await ui.find({ key: `lane-${id}-title` }))?.props.label)) <= titleW).toBe(true) // `1: ` and the title, in its cells
+    }
+    // Each lane opened in turn: its card under it, as wide, 7 rows beside the trunk.
+    for (const id of order) {
+      await openLane(ui, id)
+      const card = await ui.find({ key: `agent-${id}` })
+      expect(Number(card?.props.width) + Number(spine?.props.width)).toBe(iw)
+      expect([card?.props.borderStyle, card?.props.paddingX]).toEqual(['round', 1])
+      expect(card?.props.borderDimColor).toBe(id !== 'l1' && id !== 'l3') // ended: dim
+      expect((card?.children ?? []).filter(Boolean).length).toBe(5) // 5 rows between its borders: 7, as the trunk counts
+      expect(textOf(await ui.find({ key: `card-kind-${id}` }))).toMatch(/^[\w-]+ · sonnet( · ↳ .+)?$/) // the model in short, the parent after it when it fits
+      expect(under(card).some(t => t.type === 'Text' && t.text === (id === 'l1' || id === 'l3' ? '◐ running ' : '✓ done '))).toBe(true)
+      expect(textOf(await ui.find({ key: `lane-row-${id}` })).startsWith(' ▾ ')).toBe(true)
+      expect((await ui.find({ type: 'Client', key: 'spine' }))?.props.height).toBe(12)
+      expect((await ui.findAll({ type: 'Box' })).filter(b => /^agent-/.test(String(b.key))).map(b => b.key)).toEqual([`agent-${id}`]) // one open
+    }
+    await closeLane(ui, 'l5')
+    expect((await ui.find({ type: 'Client', key: 'spine' }))?.props.height).toBe(5)
     await ui.unmount()
   }
 })
@@ -800,7 +849,7 @@ test("a background architect's advice is read from its hand-back", async ($, on)
   await ui.unmount()
 })
 
-test("the list draws the spawn tree: a sub-agent under its parent, any depth, its parent in the agent view's summary", async ($, on) => {
+test("the lanes draw the spawn tree: a sub-agent under its parent, any depth, its parent in the agent view's summary", async ($, on) => {
   engine(on)
   agentWorld(on)
   let n = 0
@@ -813,15 +862,15 @@ test("the list draws the spawn tree: a sub-agent under its parent, any depth, it
   for (const cols of [40, 64, 120]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
     expect(await ui.find({ text: /4 total/ })).toBeDefined()
-    // One trunk from the header: every card branches off it, sub-agents off their parent's line.
+    // One trunk from the header: every lane branches off it, sub-agents off their parent's line.
     const spine = await ui.find({ type: 'Client', key: 'spine' })
     const rows = (spine?.props.props as SpineProps).rows
-    expect(rows.filter((_, k) => k % 7 === 0).map(r => r.prefix)).toEqual(['├─┬───', '│ └─┬─', '│   └─', '└─────'])
+    expect(rows.map(r => r.prefix)).toEqual(['├─┬───', '│ └─┬─', '│   └─', '└─────'])
     expect(await ui.find({ in: 'spine', text: /└─/ })).toBeDefined()
     // Parent first, then its line of descent, then the next top-level agent.
-    const titles = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => String(k).startsWith('card-'))
-    expect(titles).toEqual(['card-g1', 'card-g3', 'card-g4', 'card-g2'])
-    await ui.press({ key: 'card-g4' })
+    const titles = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => String(k).startsWith('lane-'))
+    expect(titles).toEqual(['lane-g1-title', 'lane-g3-title', 'lane-g4-title', 'lane-g2-title'])
+    await inspect(ui, 'g4')
     if (!(await ui.find({ key: 'agent-summary-box' }))) await ui.press({ key: 'agent-summary' })
     expect(await ui.find({ text: /^parent: Write parser tests$/ })).toBeDefined()
     await ui.press({ key: 'agent-next' }) // the next agent in the tree's order: its summary closed until asked
@@ -832,6 +881,7 @@ test("the list draws the spawn tree: a sub-agent under its parent, any depth, it
     await ui.press({ key: 'agent-summary' }) // closes it again
     expect(await ui.find({ key: 'agent-summary-box' })).toBeUndefined()
     await ui.press({ key: 'agent-back' })
+    await closeLane(ui, 'g4') // the next width starts with every lane closed
     await ui.unmount()
   }
 })
@@ -847,21 +897,23 @@ test("a sub-agent's card names its parent beside its type and model when it fits
   // 64 columns: 52 cells inside a card; 40: 28, so 9 cells of the parent's title.
   for (const [cols, kind] of [[64, 'Explore · opus · ↳ Implement the parser'], [40, 'Explore · opus · ↳ Implemen…']] as const) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    await openLane(ui, 'k2')
     expect(textOf(await ui.find({ key: 'card-kind-k2' }))).toBe(kind)
-    expect(textOf(await ui.find({ key: 'card-kind-k1' }))).toBe('general-purpose · opus')
     // Its row leaves room at its right end (a row of its own, not a wrapping text).
     const row = await ui.find({ key: 'card-kind-k2' })
     expect([row?.type, row?.props.justifyContent]).toEqual(['Box', 'space-between'])
     for (const key of ['fan-out', 'merge']) expect(await ui.find({ key })).toBeUndefined() // no rails around the cards
-    const dim = [(await ui.find({ key: 'agent-k1' }))?.props.borderDimColor, (await ui.find({ key: 'agent-k2' }))?.props.borderDimColor]
-    expect(dim).toEqual([false, true])
+    expect((await ui.find({ key: 'agent-k2' }))?.props.borderDimColor).toBe(true)
+    await openLane(ui, 'k1')
+    expect(textOf(await ui.find({ key: 'card-kind-k1' }))).toBe('general-purpose · opus')
+    expect((await ui.find({ key: 'agent-k1' }))?.props.borderDimColor).toBe(false)
     await ui.unmount()
   }
 })
 
 type SpineProps = { rows: { prefix: string; active: boolean; flow: boolean[] }[]; color: string; dim: string }
 
-test('every card hangs off one trunk from the header; a comet runs down it only to the card still running', async ($, on) => {
+test('every lane hangs off one trunk from the header; a comet runs down it only to the lane still running', async ($, on) => {
   engine(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `t${++n}` }))
@@ -873,21 +925,17 @@ test('every card hangs off one trunk from the header; a comet runs down it only 
     const spine = await ui.find({ type: 'Client', key: 'spine' })
     expect(spine).toBeDefined()
     const props = spine?.props.props as SpineProps
-    expect(props.rows.map(r => r.prefix)).toEqual([
-      ...['├─', '│ ', '│ ', '│ ', '│ ', '│ ', '│ '],
-      ...['├─', '│ ', '│ ', '│ ', '│ ', '│ ', '│ '],
-      ...['├─', '│ ', '│ ', '│ ', '│ ', '│ ', '│ '],
-      ...['└─', '  ', '  ', '  ', '  ', '  ', '  '],
-    ])
-    expect(props.rows.filter((_, k) => k % 7 === 0).map(r => r.active)).toEqual([false, true, false, false])
-    expect([spine?.props.width, spine?.props.height]).toEqual([2, 28])
-    // Hotkeys follow the cards as drawn.
-    const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('card-'))
+    // A row a lane, every one closed.
+    expect(props.rows.map(r => r.prefix)).toEqual(['├─', '├─', '├─', '└─'])
+    expect(props.rows.map(r => r.active)).toEqual([false, true, false, false])
+    expect([spine?.props.width, spine?.props.height]).toEqual([2, 4])
+    // Hotkeys follow the lanes as drawn.
+    const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('lane-'))
     expect(buttons.map(b => [b.key, b.props.hotkey])).toEqual([
-      ['card-t1', '1'],
-      ['card-t2', '2'],
-      ['card-t3', '3'],
-      ['card-t4', '4'],
+      ['lane-t1-title', '1'],
+      ['lane-t2-title', '2'],
+      ['lane-t3-title', '3'],
+      ['lane-t4-title', '4'],
     ])
     // A comet runs down the trunk to the running card's branch: a thick bold head on the wire
     // (┃ down the trunk, ━ along the branch; ├ └ kept), a fading trail; no dots. The ended branches stay dim.
@@ -909,32 +957,45 @@ test('every card hangs off one trunk from the header; a comet runs down it only 
   }
 })
 
-test('a wide title (CJK, emoji) stays on one row of its card, cut in cells, never mid code point', async ($, on) => {
+test('a wide title (CJK, emoji) stays on one row of its lane and of its card, cut in cells, never mid code point', async ($, on) => {
   engine(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `wd${++n}` }))
   await $.turn.start({ text: 'go', turnId: 'WD1' })
   await $.agent.spawn(spawn('general-purpose', '並列エージェントのテストを書いてパーサーの境界を確認する'))
   await $.agent.spawn(spawn('一般エージェント', '🚀 ship the parser 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀 ✅', 'wd1'))
+  const isCut = (s: string) => /\uFFFD|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(s)
   for (const cols of [40, 64]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
     for (const id of ['wd1', 'wd2']) {
+      // The lane's row: one row high, as wide as the lane, clipping what overflows; the title in its cells.
+      const lane = await ui.find({ key: `lane-${id}` })
+      const row = await ui.find({ key: `lane-row-${id}` })
+      expect([row?.props.width, row?.props.height, row?.props.overflow]).toEqual([lane?.props.width, 1, 'hidden'])
+      const titleW = Number((await ui.find({ key: `lane-title-${id}` }))?.props.width)
+      const label = String((await ui.find({ key: `lane-${id}-title` }))?.props.label)
+      expect(3 + cellWidth(label) <= titleW).toBe(true) // `1: ` and the title
+      expect(label.endsWith('…')).toBe(true)
+      expect(isCut(label)).toBe(false)
+      // Its card opened: the title's row, one row high, as wide as the card's inside, the title
+      // cut to leave `inspect ›` its cells at the right.
+      await openLane(ui, id)
       const card = await ui.find({ key: `agent-${id}` })
       const cw = Number(card?.props.width) - 4
-      // The title's row: one row high, as wide as the card's inside, clipping what overflows.
-      const row = (card?.children ?? []).filter(Boolean)[0] as { props?: Record<string, unknown> } | undefined
-      expect([row?.props?.width, row?.props?.height, row?.props?.overflow]).toEqual([cw, 1, 'hidden'])
-      const label = String((await ui.find({ key: `card-${id}` }))?.props.label)
-      expect(3 + cellWidth(label) <= cw).toBe(true) // `1: ` and the title
-      expect(label.endsWith('…')).toBe(true)
-      expect(/\uFFFD|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(label)).toBe(false)
+      const titleRow = await ui.find({ key: `card-title-${id}` })
+      expect([titleRow?.props.width, titleRow?.props.height, titleRow?.props.overflow]).toEqual([cw, 1, 'hidden'])
+      const title = under(titleRow).find(t => t.type === 'Text')?.text ?? ''
+      expect(title.endsWith('…')).toBe(true)
+      expect(isCut(title)).toBe(false)
+      expect((await ui.find({ key: `card-inspect-${id}` }))?.props.label).toBe('inspect ›')
+      expect(cellWidth(title) + 1 + cellWidth('inspect ›') <= cw).toBe(true)
       expect(cellWidth(textOf(await ui.find({ key: `card-kind-${id}` }))) <= cw).toBe(true)
     }
     await ui.unmount()
   }
 })
 
-test('every card kept is drawn, none "earlier"; hotkeys 1-9, the cards after them without one', async ($, on) => {
+test('every agent kept has its lane, none "earlier"; hotkeys 1-9, the lanes after them without one', async ($, on) => {
   engine(on)
   const world = agentWorld(on)
   let n = 0
@@ -943,14 +1004,81 @@ test('every card kept is drawn, none "earlier"; hotkeys 1-9, the cards after the
   for (let i = 1; i <= 11; i += 1) await $.agent.spawn(spawn('Explore', `job ${i}`))
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await ui.find({ text: /earlier/ })).toBeUndefined()
-  expect((await ui.find({ type: 'Client', key: 'spine' }))?.props.height).toBe(77)
-  const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('card-'))
+  expect((await ui.find({ type: 'Client', key: 'spine' }))?.props.height).toBe(11)
+  const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('lane-'))
   expect(buttons.map(b => b.props.label)).toEqual(Array.from({ length: 11 }, (_, i) => `job ${i + 1}`))
   expect(buttons.map(b => b.props.hotkey)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', undefined, undefined])
-  expect(await ui.find({ text: /^1-9 open$/ })).toBeDefined()
-  await ui.press({ key: 'card-e11' }) // still opens, by a press
+  expect(await ui.find({ text: /^1-9 card$/ })).toBeDefined()
+  await inspect(ui, 'e11') // still opens, by a press
   expect(textOf(await ui.find({ key: 'agent-heading' }))).toMatch(/^Agent · job 11 · /)
   expect(world.opened).toEqual([])
+  await ui.unmount()
+})
+
+test('a lane pressed opens its card right under it, pressed again closes it; one lane open at a time, kept across drawings', async ($, on) => {
+  engine(on, 65_000)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `ln${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'LN1' })
+  for (const d of ['alpha', 'beta', 'gamma']) await $.agent.spawn(spawn('Explore', `task ${d}`))
+  await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 'LN1', agentId: 'ln1', reason: 'answer' })
+  let ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  const cardsDrawn = async () => (await ui.findAll({ type: 'Box' })).map(b => String(b.key)).filter(k => /^agent-/.test(k))
+  const trunk = async () => ((await ui.find({ type: 'Client', key: 'spine' }))?.props.props as SpineProps).rows.map(r => r.prefix)
+  const glyphOf = async (id: string) => textOf(await ui.find({ key: `lane-row-${id}` })).slice(0, 3)
+  expect(await cardsDrawn()).toEqual([])
+  expect(await trunk()).toEqual(['├─', '├─', '└─'])
+  expect([await glyphOf('ln1'), await glyphOf('ln2'), await glyphOf('ln3')]).toEqual([' ✓ ', ' ◐ ', ' ◐ '])
+  await ui.press({ key: 'lane-ln2-title' })
+  expect(await cardsDrawn()).toEqual(['agent-ln2'])
+  // Right under its lane's row, inside its lane; the trunk runs down beside it.
+  const lane = await ui.find({ key: 'lane-ln2' })
+  expect(((lane?.children ?? []).filter(Boolean) as Tree[]).map(c => c.props?.key)).toEqual(['lane-row-ln2', 'agent-ln2'])
+  expect(await trunk()).toEqual(['├─', '├─', ...Array.from({ length: 7 }, () => '│ '), '└─'])
+  expect(await glyphOf('ln2')).toBe(' ▾ ')
+  expect(await ui.find({ key: 'card-ln2' })).toBeUndefined() // the card's title is no Button: its `inspect ›` is
+  expect(await ui.find({ text: /^1-3 card$/ })).toBeDefined()
+  // Another lane: its card, the first one closed.
+  await ui.press({ key: 'lane-ln3-title' })
+  expect(await cardsDrawn()).toEqual(['agent-ln3'])
+  expect([await glyphOf('ln2'), await glyphOf('ln3')]).toEqual([' ◐ ', ' ▾ '])
+  // Pressed again: closed, the trunk a row a lane again.
+  await ui.press({ key: 'lane-ln3-title' })
+  expect(await cardsDrawn()).toEqual([])
+  expect(await trunk()).toEqual(['├─', '├─', '└─'])
+  // Its hotkey is the lane's: 1 opens the first; the pane drawn again keeps it open.
+  expect((await ui.find({ key: 'lane-ln1-title' }))?.props.hotkey).toBe('1')
+  await ui.press({ key: 'lane-ln1-title' })
+  await ui.unmount()
+  ui = await $.ui.mount({ ...pane(40), surface: 'terminal' })
+  expect(await cardsDrawn()).toEqual(['agent-ln1'])
+  await ui.unmount()
+  // The agent a surface has in view: ▶ on its lane (▾ stays the open lane's).
+  ui = await $.ui.mount({ ...pane(64), props: { ...pane(64).props, view: { agentId: 'ln2' } }, surface: 'terminal' })
+  expect([await glyphOf('ln1'), await glyphOf('ln2'), await glyphOf('ln3')]).toEqual([' ▾ ', ' ▶ ', ' ◐ '])
+  await ui.unmount()
+})
+
+test("an open card's `inspect ›` turns the pane to its agent; its title is text beside it", async ($, on) => {
+  engine(on, 50_000)
+  const world = agentWorld(on, () => conversation)
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'in1' }))
+  await $.turn.start({ text: 'go', turnId: 'IN1' })
+  await $.agent.spawn(spawn('general-purpose', 'Audit the repository'))
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await ui.find({ key: 'card-inspect-in1' })).toBeUndefined() // its lane closed: nothing to inspect
+  await ui.press({ key: 'lane-in1-title' })
+  expect(world.reads).toEqual([]) // a lane opened reads nothing
+  const inside = under(await ui.find({ key: 'card-title-in1' }))
+  expect(inside.find(t => t.type === 'Text')?.text).toBe('Audit the repository')
+  expect(inside.filter(t => t.type === 'Button').map(b => [b.props.label, b.props.hotkey])).toEqual([['inspect ›', undefined]])
+  await ui.press({ key: 'card-inspect-in1' })
+  expect(world.opened).toEqual([]) // no second pane: this one turns to the agent
+  expect(world.reads).toEqual(['in1'])
+  expect(textOf(await ui.find({ key: 'agent-heading' }))).toBe('Agent · Audit the repository · ◐ running · sonnet')
+  expect(await ui.find({ key: 'lane-in1-title' })).toBeUndefined()
+  await ui.press({ key: 'agent-back' })
+  expect(await ui.find({ key: 'agent-in1' })).toBeDefined() // back on the dashboard, its lane still open
   await ui.unmount()
 })
 
@@ -988,7 +1116,24 @@ const textOf = (node: { children?: unknown[] } | undefined) =>
     .map(t => t.text)
     .join('')
 
-test('the agents section is framed in the agents colour, its title too, and the cards fit inside', async ($, on) => {
+// The lane opened stays open across drawings (it is the pane's state) and a press on its title
+// closes it: these press it only when it is not already as asked.
+type Driven = { find: (q: { key: string }) => Promise<unknown>; press: (t: { key: string }) => Promise<unknown> }
+/** Opens an agent's lane on its card (the one open before closes). */
+const openLane = async (ui: Driven, id: string) => {
+  if (!(await ui.find({ key: `card-inspect-${id}` }))) await ui.press({ key: `lane-${id}-title` })
+}
+/** Closes an agent's lane when it is the one open. */
+const closeLane = async (ui: Driven, id: string) => {
+  if (await ui.find({ key: `card-inspect-${id}` })) await ui.press({ key: `lane-${id}-title` })
+}
+/** Turns the pane to an agent's conversation: its lane opened, then its card's `inspect ›`. */
+const inspect = async (ui: Driven, id: string) => {
+  await openLane(ui, id)
+  await ui.press({ key: `card-inspect-${id}` })
+}
+
+test('the agents section is framed in the agents colour, its title too, and the lanes and the card opened fit inside', async ($, on) => {
   engine(on, 65_000)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `fr${++n}` }))
@@ -1002,15 +1147,24 @@ test('the agents section is framed in the agents colour, its title too, and the 
     const inside = under(frame)
     const title = inside.find(t => t.type === 'Text' && /^agents ·/.test(t.text))
     expect([title?.props.color, title?.props.bold]).toEqual(['suggestion', true])
-    // Inside the frame (w - 4 cells): the trunk, then each card; a card's status row, its
-    // glyph, its state and its clock, fits inside the card's own border and padding.
+    // Inside the frame (w - 4 cells): the trunk, then each lane; a lane's row, its glyph, its
+    // title's cells, its bar and its clock, fits in the lane's width.
     const spine = await ui.find({ type: 'Client', key: 'spine' })
     for (const id of ['fr1', 'fr2', 'fr3', 'fr4']) {
+      const laneW = Number((await ui.find({ key: `lane-${id}` }))?.props.width)
+      expect(Number(spine?.props.width) + laneW).toBe(w - 4)
+      const titleW = Number((await ui.find({ key: `lane-title-${id}` }))?.props.width)
+      const laneClock = await ui.find({ in: `lane-clock-${id}`, type: 'Text', text: /^\d+:\d\d$/ })
+      expect(cellWidth(textOf(await ui.find({ key: `lane-row-${id}` }))) + titleW + (laneClock?.text.length ?? 99) <= laneW).toBe(true)
+      // Its card opened: as wide as the lane; its status row, its glyph, its state and its
+      // clock, fits inside the card's own border and padding.
+      await openLane(ui, id)
       const card = await ui.find({ key: `agent-${id}` })
       expect(Number(spine?.props.width) + Number(card?.props.width)).toBe(w - 4)
       const shown = await ui.find({ in: `card-clock-${id}`, type: 'Text', text: /^\d+:\d\d$/ })
       expect('◐ running '.length + (shown?.text.length ?? 99) <= Number(card?.props.width) - 4).toBe(true)
     }
+    await closeLane(ui, 'fr4')
     await ui.unmount()
   }
   // Inline, the summary draws no frame.
@@ -1112,7 +1266,7 @@ test('the agents title never runs past the frame: the hotkey hint gives way firs
     const texts = under(header as { children?: unknown[] }).filter(t => t.type === 'Text')
     expect(texts[0]?.text).toBe('agents · 12 running · 12 total')
     expect(texts[0]?.props.wrap).toBe('truncate')
-    expect(texts.some(t => t.text === '1-9 open')).toBe(hint)
+    expect(texts.some(t => t.text === '1-9 card')).toBe(hint)
     expect(texts.reduce((sum, t) => sum + t.text.length, 0) + (texts.length - 1) <= cols - 4).toBe(true)
     await ui.unmount()
   }
@@ -1147,13 +1301,19 @@ test('Clawd stands at the top, centred, in its own colours, and waves while agen
   await ui.unmount()
 })
 
-test('Clawd is drawn still where there is no Client, and not at all inline or under mascot: off', async ($, on) => {
+test('Clawd is an SVG on the remote surfaces (their font does not join block glyphs), and not at all inline or under mascot: off', async ($, on) => {
   engine(on)
-  for (const surface of ['vscode', 'mobile'] as const) {
+  for (const surface of ['desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...pane(64), surface })
-    expect(await ui.find({ key: 'clawd' })).toBeDefined()
-    const eyes = await ui.find({ type: 'Text', text: '▛███▛█' })
-    expect([eyes?.props.color, eyes?.props.backgroundColor]).toEqual(['#D77757', '#000000'])
+    const svg = (await ui.findAll({ type: 'Svg' })).find(x => x.props.alt === 'Clawd')
+    expect(svg?.props.alt).toBe('Clawd')
+    // 9 cells by 3 rows, each 2 × 2 quadrants of 5 × 10 pixels: the terminal's proportions.
+    expect([svg?.props.width, svg?.props.height]).toEqual([90, 60])
+    const source = String(svg?.props.source)
+    expect(source).toContain('fill="#D77757"')
+    expect(source).toContain('fill="#000000"') // the eyes
+    expect(await ui.find({ type: 'Text', text: '▛███▛█' })).toBeUndefined() // no glyphs left
+    expect(await ui.find({ type: 'Client', key: 'clawd' })).toBeUndefined()
     await ui.unmount()
   }
   const mini = await $.ui.mount({ ...pane(80), props: { ...pane(80).props, placement: 'inline' as const }, surface: 'terminal' })
@@ -1167,31 +1327,39 @@ test('mascot: off leaves Clawd out', { options: { mascot: 'off' } }, async ($, o
   for (const surface of ['terminal', 'vscode'] as const) {
     const ui = await $.ui.mount({ ...pane(64), surface })
     expect(await ui.find({ key: 'clawd' })).toBeUndefined()
+    expect((await ui.findAll({ type: 'Svg' })).some(x => x.props.alt === 'Clawd')).toBe(false)
     expect(await ui.find({ text: /▛███/ })).toBeUndefined()
     await ui.unmount()
   }
 })
 
-const logLinesAt = async ($: Engine, on: On, bodyRows: number) => {
+/** The log lines drawn at a height, with one agent; its lane opened on its card when asked. */
+const logLinesAt = async ($: Engine, on: On, bodyRows: number, isLaneOpen = false) => {
   engine(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `lg${++n}` }))
   for (let i = 1; i <= 9; i += 1) await $.turn.start({ text: `prompt ${i}`, turnId: `LG${i}` })
   await $.agent.spawn(spawn('Explore', 'one job'))
   const ui = await $.ui.mount({ ...pane(64), props: { ...pane(64).props, scroll: { offset: 0, bodyRows } }, surface: 'terminal' })
+  if (isLaneOpen) await openLane(ui, 'lg1')
   const count = (await ui.findAll({ type: 'Text', text: clockOf })).length
   await ui.unmount()
   return count
 }
 
-// One card (its frame and title, 3 rows, then its 7) beside main, gate, the receipt and the pane's
-// header: 26 rows used. 36 rows leave the log 7; Clawd's 3 rows leave it 4.
+// One lane (its frame and title, 3 rows, then its 1) beside main, gate, the receipt and the pane's
+// header: 20 rows used. 30 rows leave the log 7; Clawd's 3 rows leave it 4. Its card opened takes
+// 7 more: 37 rows leave the same.
 test('Clawd takes its 3 rows from the log, not from the panes below it', async ($, on) => {
-  expect(await logLinesAt($, on, 36)).toBe(4)
+  expect(await logLinesAt($, on, 30)).toBe(4)
 })
 
 test('without Clawd the log keeps those rows', { options: { mascot: 'off' } }, async ($, on) => {
-  expect(await logLinesAt($, on, 36)).toBe(7)
+  expect(await logLinesAt($, on, 30)).toBe(7)
+})
+
+test("a lane's card opened takes its 7 rows from the log too", { options: { mascot: 'off' } }, async ($, on) => {
+  expect(await logLinesAt($, on, 37, true)).toBe(7)
 })
 
 // Clawd heads the pane: the first row of the tree, docked or inline, and the tree asks for no more
@@ -1291,9 +1459,13 @@ test("a review agent's card shows its verdict at the right of its second row; an
   await $.turn.complete({ answer: 'Two blockers.\n**Verdict global : BLOQUANT**', durationMs: 10, isAborted: false, turnId: 'VD1', agentId: 'vd3', reason: 'answer' })
   for (const cols of [40, 64, 120]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    await openLane(ui, 'vd1')
     const badge = under(await ui.find({ key: 'card-verdict-vd1' }))[0]
     expect([badge?.type, badge?.text, badge?.props.color, badge?.props.bold]).toEqual(['Text', 'MINEUR', 'warning', false])
+    await openLane(ui, 'vd2')
+    expect(await ui.find({ key: 'card-kind-vd2' })).toBeDefined()
     expect(await ui.find({ key: 'card-verdict-vd2' })).toBeUndefined() // the same report, but not a review task
+    await openLane(ui, 'vd3')
     const blocker = under(await ui.find({ key: 'card-verdict-vd3' }))[0]
     expect([blocker?.text, blocker?.props.color, blocker?.props.bold]).toEqual(['BLOQUANT', 'error', true])
     // The type and model give the badge its cells: the row stays within the card.
@@ -1331,6 +1503,7 @@ test('a message from main to an ended agent: counted on its card, its fifth row,
   await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
   await $.turn.complete({ answer: 'done', durationMs: 10, isAborted: false, turnId: 'MS1', agentId: 'ms1', reason: 'answer' })
   const before = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await openLane(before, 'ms1') // open from now on: the lane opened is the pane's state
   expect(textOf(await before.find({ key: 'card-mail-ms1' }))).toBe('✉ —')
   expect(await before.find({ text: /^✓ done $/ })).toBeDefined()
   await before.unmount()
@@ -1375,17 +1548,21 @@ test('a message between two agents counts out on one card and in on the other; a
   await $.session.receive({ origin: { kind: 'peer' }, text: '<agent-message from="pm2">\n[Subagent hand-back] The report follows:\n  Found one bug.\n</agent-message>' })
   for (const cols of [40, 64, 120]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    await openLane(ui, 'pm1')
     expect(textOf(await ui.find({ key: 'card-mail-pm1' }))).toBe('✉ 1 in · 0 out')
+    await openLane(ui, 'pm2')
     expect(textOf(await ui.find({ key: 'card-mail-pm2' }))).toBe('✉ 0 in · 1 out')
-    // Every row of a card, its fifth included, stays within the card: 7 rows a card, the trunk 7 a card.
+    // Every row of a card, its fifth included, stays within the card: 7 rows a card, as the
+    // trunk counts beside it (a row a lane, 7 more under the one opened).
     for (const id of ['pm1', 'pm2']) {
+      await openLane(ui, id)
       const card = await ui.find({ key: `agent-${id}` })
       const cw = Number(card?.props.width) - 4
       const rows = (card?.children ?? []).filter(Boolean) as { children?: unknown[] }[]
       expect(rows.length).toBe(5)
       for (const row of rows.slice(1)) expect(cellWidth(textOf(row)) <= cw).toBe(true)
+      expect((await ui.find({ type: 'Client', key: 'spine' }))?.props.height).toBe(9)
     }
-    expect((await ui.find({ type: 'Client', key: 'spine' }))?.props.height).toBe(14)
     await ui.unmount()
   }
   const log = await $.ui.mount({ ...pane(64), surface: 'terminal' })
@@ -1405,6 +1582,8 @@ test('a step on an ended card means it was resumed: the card runs again', async 
   await $.turn.complete({ answer: 'done', durationMs: 10, isAborted: false, turnId: 'RS1', agentId: 'rs1', reason: 'answer' })
   await drain($, { turnId: 'RS2', index: 0, model: 'claude-opus-5-5', messageCount: 3, agentId: 'rs1' })
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(textOf(await ui.find({ key: 'lane-row-rs1' })).startsWith(' ◐ ')).toBe(true)
+  await openLane(ui, 'rs1')
   expect(await ui.find({ text: /^◐ running $/ })).toBeDefined()
   expect((await ui.find({ key: 'agent-rs1' }))?.props.borderDimColor).toBe(false)
   await ui.unmount()
@@ -1432,8 +1611,10 @@ test("a card's context gauge: exact on the main loop's model, ~ on another; a co
   await $.session.compact({ trigger: 'precompute', agentId: 'cg2', messages: summary }) // not one that stands
   for (const cols of [64, 120]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
-    expect(textOf(await ui.find({ key: 'card-stats-cg1' }))).toBe('ctx ▰▰▰▱▱▱▱▱ 38% · out 100 · 1 step ⟲1')
+    await openLane(ui, 'cg2')
     expect(textOf(await ui.find({ key: 'card-stats-cg2' }))).toBe('ctx ▰▰▰▱▱▱▱▱ 38%~ · out 100 · 1 step')
+    await openLane(ui, 'cg1')
+    expect(textOf(await ui.find({ key: 'card-stats-cg1' }))).toBe('ctx ▰▰▰▱▱▱▱▱ 38% · out 100 · 1 step ⟲1')
     const runs = under(await ui.find({ key: 'card-stats-cg1' })).filter(t => t.type === 'Text')
     expect(runs.find(t => t.text === '▰▰▰')?.props.color).toBe('suggestion')
     expect(runs.find(t => t.text === ' ⟲1')?.props.color).toBe('warning')
@@ -1441,8 +1622,10 @@ test("a card's context gauge: exact on the main loop's model, ~ on another; a co
   }
   // At 40 columns the row gives up the gauge rather than run past the card.
   const narrow = await $.ui.mount({ ...pane(40), surface: 'terminal' })
+  await openLane(narrow, 'cg1')
   const cw = Number((await narrow.find({ key: 'agent-cg1' }))?.props.width) - 4
   expect(cellWidth(textOf(await narrow.find({ key: 'card-stats-cg1' }))) <= cw).toBe(true)
+  await openLane(narrow, 'cg2')
   expect(textOf(await narrow.find({ key: 'card-stats-cg2' }))).toMatch(/^ctx .*38%~/)
   await narrow.unmount()
   const log = await $.ui.mount({ ...pane(64), surface: 'terminal' })
@@ -1463,14 +1646,17 @@ test('a delivery goes to the latest unresolved send, not the oldest: main to ano
   await $.session.send({ to: 'bob', text: 'Parser ready for review', origin: { kind: 'model' }, agentId: 'q1' })
   await $.session.receive({ origin: { kind: 'peer' }, text: 'Parser ready for review', agentId: 'q2' })
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  expect(textOf(await ui.find({ key: 'card-mail-q1' }))).toBe('✉ 0 in · 1 out')
+  await openLane(ui, 'q2')
   expect(textOf(await ui.find({ key: 'card-mail-q2' }))).toBe('✉ 1 in · 0 out')
+  await openLane(ui, 'q1') // open from now on: the lane opened is the pane's state
+  expect(textOf(await ui.find({ key: 'card-mail-q1' }))).toBe('✉ 0 in · 1 out')
   expect(await ui.find({ text: /^→ Review the parser · « Parser ready for review »$/ })).toBeDefined()
   await ui.unmount()
   // A send nobody delivered within 60 s no longer waits: a later delivery is not pinned on it.
   await clock.advance(61_000)
   await $.session.receive({ origin: { kind: 'peer' }, text: 'Hello from nowhere', agentId: 'q1' })
   const later = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await openLane(later, 'q1')
   expect(textOf(await later.find({ key: 'card-mail-q1' }))).toBe('✉ 1 in · 1 out')
   expect(await later.find({ text: /« Status\? »/ })).toBeUndefined()
   expect(await later.find({ text: /^→ Implement the parser · « Hello from nowhere »$/ })).toBeDefined()
@@ -1489,6 +1675,7 @@ test("a window is learnt only from a measurement: main measured on X, then a ste
   await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
   await drain($, { turnId: 'WY1', index: 2, model: 'claude-sonnet-5-5', messageCount: 3, agentId: 'wy1' })
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await openLane(ui, 'wy1')
   expect(textOf(await ui.find({ key: 'card-stats-wy1' }))).toBe('ctx ▰▰▰▱▱▱▱▱ 38%~ · out 100 · 1 step')
   await ui.unmount()
 })
@@ -1619,9 +1806,9 @@ const agentReady = async ($: Engine, on: On, answer: (agentId: string | undefine
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'ap1' }))
   await $.turn.start({ text: 'go', turnId: 'AP1' })
   await $.agent.spawn(spawn('general-purpose', 'Audit the repository'))
-  // The pane on screen; its card pressed turns it to the agent.
+  // The pane on screen; its lane opened, its card's inspect turns it to the agent.
   const shown = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  await shown.press({ key: 'card-ap1' })
+  await inspect(shown, 'ap1')
   return { clock, world, shown }
 }
 
@@ -1631,7 +1818,7 @@ const agentShown = async (ui: { find: (q: { key: string }) => Promise<{ children
   return { title: textOf(await ui.find({ key: 'agent-heading' })), texts, isDashboard: texts.some(t => /^session log/.test(t)) }
 }
 
-test("a card's press turns the pane to that agent's conversation, read once: Clawd first, then the heading and its controls", async ($, on) => {
+test("a card's inspect turns the pane to that agent's conversation, read once: Clawd first, then the heading and its controls, the way back at its end", async ($, on) => {
   const { world, shown: pane0 } = await agentReady($, on)
   expect(world.opened).toEqual([]) // no second pane
   expect(world.reads).toEqual(['ap1'])
@@ -1647,6 +1834,10 @@ test("a card's press turns the pane to that agent's conversation, read once: Cla
     ['agent-prev', 'p', '‹ prev'],
     ['agent-next', 'n', 'next ›'],
     ['agent-summary', 'i', 'summary ▸'],
+    // At the end, after the conversation: no hotkey, b, p and n are the top row's.
+    ['agent-back-bottom', undefined, '‹ back'],
+    ['agent-prev-bottom', undefined, '‹ prev'],
+    ['agent-next-bottom', undefined, 'next ›'],
   ])
   expect(shown.texts.filter(t => /^(▶ user|◆ assistant)$/.test(t))).toEqual(['▶ user', '◆ assistant'])
   expect(shown.texts.some(t => /^read \d\d:\d\d:\d\d$/.test(t))).toBe(true)
@@ -1659,9 +1850,14 @@ test('the agent view at 40, 64 and 120 columns: the heading and its controls fit
     expect((await ui.find({ type: 'Text', text: /^Agent · Audit/ }))?.props.color).toBe('suggestion')
     expect(cellWidth(textOf(await ui.find({ key: 'agent-heading' }))) <= cols).toBe(true)
     // Each Button draws its hotkey before its label (`b: back`), one cell between them.
-    const nav = (await ui.findAll({ type: 'Button' })).map(b => cellWidth(String(b.props.label)) + 3)
+    const buttons = await ui.findAll({ type: 'Button' })
+    const nav = buttons.filter(b => !String(b.key).endsWith('-bottom')).map(b => cellWidth(String(b.props.label)) + 3)
     expect(nav.length).toBe(4)
     expect(nav.reduce((x, y) => x + y, 0) + nav.length - 1 <= cols).toBe(true)
+    // The row at the end draws its labels alone (no hotkey), one cell between them.
+    const bottom = buttons.filter(b => String(b.key).endsWith('-bottom')).map(b => cellWidth(String(b.props.label)))
+    expect(bottom.length).toBe(3)
+    expect(bottom.reduce((x, y) => x + y, 0) + bottom.length - 1 <= cols).toBe(true)
     expect(await ui.find({ key: 'clawd' })).toBeDefined()
     const user = await ui.find({ type: 'Text', text: /^▶ user$/ })
     const assistant = await ui.find({ type: 'Text', text: /^◆ assistant$/ })
@@ -1704,7 +1900,7 @@ test("an ended agent the session no longer serves is read from its saved transcr
   await $.agent.spawn(spawn('general-purpose', 'Audit the repository'))
   await $.classic.SubagentStop({ stop_hook_active: false, agent_id: 'ap1', agent_type: 'general-purpose', agent_transcript_path: '/t/s/subagents/agent-ap1.jsonl', transcript_path: '/t/s.jsonl' })
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  await ui.press({ key: 'card-ap1' })
+  await inspect(ui, 'ap1')
   expect(reads).toEqual(['/t/s/subagents/agent-ap1.jsonl'])
   expect(await ui.find({ type: 'Text', text: /^read \d\d:\d\d:\d\d · from the saved transcript$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^✗ Read → repo\/x\.ts$/ })).toBeDefined()
@@ -1725,7 +1921,7 @@ test('no conversation and no transcript to read: the agent view says why', async
   // Once the main transcript is known, a file over 4 MiB is not read.
   await $.classic.UserPromptSubmit({ prompt: 'x', transcript_path: '/t/s.jsonl' } as never)
   await ui.press({ key: 'agent-back' })
-  await ui.press({ key: 'card-ap1' })
+  await inspect(ui, 'ap1')
   const big = ui
   expect(await big.find({ type: 'Text', text: /saved transcript is 6\.0 MiB, over the 4 MiB read limit$/ })).toBeDefined()
   expect((await big.find({ type: 'Text', text: /^transcript unavailable/ }))?.props.color).toBe('error')
@@ -1768,7 +1964,7 @@ test('closing the pane leaves the agent view and drops its conversation; so does
   expect(world.closed).toEqual(['flightdeck'])
   expect((await agentShown(shown)).isDashboard).toBe(true)
   // Opened again, then the session ends: nothing else to close, the dashboard back.
-  await shown.press({ key: 'card-ap1' })
+  await inspect(shown, 'ap1')
   expect((await agentShown(shown)).isDashboard).toBe(false)
   await $.session.end({ reason: 'other', sessionId: 's' } as never)
   expect(world.closed).toEqual(['flightdeck'])
@@ -1861,13 +2057,13 @@ test('b goes back: the dashboard drawn again, the conversation dropped, no more 
   const after = await agentShown(shown)
   expect(after.isDashboard).toBe(true)
   expect(after.title).toBe('')
-  expect(await shown.find({ key: 'card-ap1' })).toBeDefined()
+  expect(await shown.find({ key: 'lane-ap1-title' })).toBeDefined()
   // The conversation dropped: a later call of that agent reads nothing.
   await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'bk1', agentId: 'ap1' } as never)
   await clock.advance(2_000)
   expect(world.reads).toEqual(['ap1'])
   // Its card pressed again: read again.
-  await shown.press({ key: 'card-ap1' })
+  await inspect(shown, 'ap1')
   expect(world.reads).toEqual(['ap1', 'ap1'])
   expect((await agentShown(shown)).isDashboard).toBe(false)
 })
@@ -1882,7 +2078,7 @@ test('prev and next walk the agents in the tree order, reading each, dim at the 
   await $.agent.spawn(spawn('Explore', 'Review the docs'))
   await $.agent.spawn(spawn('general-purpose', 'Write parser tests', 'pn1'))
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  await ui.press({ key: 'card-pn1' })
+  await inspect(ui, 'pn1')
   expect((await ui.find({ key: 'agent-prev' }))?.props.dimColor).toBe(true)
   expect((await ui.find({ key: 'agent-next' }))?.props.dimColor).toBe(false)
   await ui.press({ key: 'agent-prev' }) // the first: nothing before it
@@ -1896,7 +2092,52 @@ test('prev and next walk the agents in the tree order, reading each, dim at the 
   await ui.press({ key: 'agent-prev' })
   expect((await agentShown(ui)).title).toMatch(/^Agent · Write parser tests · /)
   expect(world.reads).toEqual(['pn1', 'pn3', 'pn2', 'pn3'])
-  expect(await ui.find({ key: 'card-pn1' })).toBeUndefined()
+  expect(await ui.find({ key: 'lane-pn1-title' })).toBeUndefined()
+  expect(world.opened).toEqual([])
+  await ui.unmount()
+})
+
+test('the agent view opens at its top; at its end, after the read line, a row of its own goes back, to the previous or the next agent', async ($, on) => {
+  // Opening asks for the top (`$.ui.scroll` to 'start') and the focus on back (`$.ui.focus`);
+  // the kit implements neither for a plugin, so both are refused here: the view opens, reads
+  // and draws all the same.
+  const clock = engine(on, 50_000)
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  const world = agentWorld(on, () => conversation)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `nb${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'NB1' })
+  await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
+  await $.agent.spawn(spawn('Explore', 'Review the docs'))
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await inspect(ui, 'nb1')
+  expect(world.reads).toEqual(['nb1'])
+  // The last three rows: the read line, a rule as wide as the pane, the row of buttons.
+  const { root } = await topOf(ui)
+  const [read, rule, nav] = ((root.children ?? []).filter(Boolean) as Tree[]).slice(-3)
+  expect((read?.children ?? []).join('')).toMatch(/^read \d\d:\d\d:\d\d$/)
+  expect((rule?.children ?? []).join('')).toBe('─'.repeat(64))
+  expect(nav?.props?.key).toBe('agent-nav-bottom')
+  const buttons = under(await ui.find({ key: 'agent-nav-bottom' })).filter(t => t.type === 'Button')
+  expect(buttons.map(b => [b.props.label, b.props.hotkey, b.props.dimColor ?? false])).toEqual([
+    ['‹ back', undefined, false],
+    ['‹ prev', undefined, true], // the first: nothing before it
+    ['next ›', undefined, false],
+  ])
+  await ui.press({ key: 'agent-next-bottom' })
+  expect((await agentShown(ui)).title).toBe('Agent · Review the docs · ◐ running · sonnet')
+  await ui.press({ key: 'agent-prev-bottom' })
+  expect((await agentShown(ui)).title).toMatch(/^Agent · Implement the parser · /)
+  expect(world.reads).toEqual(['nb1', 'nb2', 'nb1'])
+  // Back from the end: the dashboard, the conversation dropped, no more reads.
+  await ui.press({ key: 'agent-back-bottom' })
+  const after = await agentShown(ui)
+  expect([after.isDashboard, after.title]).toEqual([true, ''])
+  expect(await ui.find({ key: 'agent-nav-bottom' })).toBeUndefined()
+  expect(await ui.find({ key: 'lane-nb1-title' })).toBeDefined()
+  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'nb-c1', agentId: 'nb1' } as never)
+  await clock.advance(2_000)
+  expect(world.reads).toEqual(['nb1', 'nb2', 'nb1'])
   expect(world.opened).toEqual([])
   await ui.unmount()
 })
@@ -1910,13 +2151,13 @@ test('an agent whose card is evicted takes the pane back to the dashboard, and i
   await $.turn.start({ text: 'go', turnId: 'EV1' })
   await $.agent.spawn(spawn('general-purpose', 'The first job'))
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  await ui.press({ key: 'card-ev1' })
+  await inspect(ui, 'ev1')
   expect((await agentShown(ui)).title).toMatch(/^Agent · The first job/)
   for (let i = 2; i <= 25; i += 1) await $.agent.spawn(spawn('Explore', `job ${i}`))
   const after = await agentShown(ui)
   expect(after.isDashboard).toBe(true)
   expect(after.title).toBe('')
-  expect(await ui.find({ key: 'card-ev1' })).toBeUndefined()
+  expect(await ui.find({ key: 'lane-ev1-title' })).toBeUndefined()
   await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'ev-c1', agentId: 'ev1' } as never)
   await clock.advance(2_000)
   expect(world.reads).toEqual(['ev1'])

@@ -43,7 +43,7 @@ export const DEFAULT_ARCHITECT: Architect = { consults: [], ids: [], seen: [], l
 const ZERO: Tally = { rule: 0, ask: 0, cleared: 0, deny: 0 }
 export const DEFAULT_GATE: Gate = { recent: [], totals: { file: ZERO, shell: ZERO, other: ZERO } }
 export const DEFAULT_TURN: Turn = { edits: 0, errorStreak: 0, errors: 0, isReviewing: false, startedAt: 0, costAtStart: null }
-export const DEFAULT_VIEW: View = { expanded: null, gateOpen: null, layout: null, agent: null }
+export const DEFAULT_VIEW: View = { expanded: null, gateOpen: null, layout: null, agent: null, lane: null }
 export const DEFAULT_ROSTER: Roster = { architectTypes: [] }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -594,11 +594,18 @@ export const timeBars = (cards: AgentCard[], now: number, width: number) => {
 /** Rows one agent card takes in the list: its two borders, the title, type and model, tokens, status and messages. */
 export const CARD_ROWS = 7
 
-/** Cards kept in state, the oldest dropped past it; the list draws every one. */
+/** Cards kept in state, the oldest dropped past it; the swimlanes draw every one. */
 export const MAX_CARDS = 24
 
-/** Rows the agents section takes: its frame and title, then each card; nothing without a card. */
-export const agentsRows = (cards: number) => (cards > 0 ? 3 + CARD_ROWS * Math.min(cards, MAX_CARDS) : 0)
+/**
+ * Rows the agents section takes: its frame and title, then a swimlane (one row) per agent, and
+ * the card of the lane opened under it; nothing without a card.
+ */
+export const agentsRows = (cards: number, isLaneOpen = false) =>
+  cards > 0 ? 3 + Math.min(cards, MAX_CARDS) + (isLaneOpen ? CARD_ROWS : 0) : 0
+
+/** Rows beside each swimlane, in the tree's order: one, and the card's under the lane opened. */
+export const laneHeights = (ids: string[], open: string | null) => ids.map(id => (id === open ? 1 + CARD_ROWS : 1))
 
 /** How many log lines fit: what the other panels leave, never fewer than 4 nor more than 8. */
 export const logRows = (bodyRows: number, used: number) => Math.max(4, Math.min(8, bodyRows - used - 3))
@@ -746,14 +753,23 @@ export const SPINE_MAX = 6
 const SPINE_LEVELS = (SPINE_MAX - 2) / 2
 
 /**
- * The cards' trunk column: `height` rows beside each card, in the tree's order, all one width.
+ * The cards' trunk column: `height` rows beside each card (one number for all, or one per card),
+ * in the tree's order, all one width.
  * A card's branch (`├─`, the last one at its level `└─`) is on its top row and runs on in `─` to
  * the card; a card with children drops a `┬` there, and their line runs down beside it. A line
  * goes on down while a later card hangs at its column before a shallower one. Past level 2, cards
  * are drawn at level 2 with their own branch. `flow` marks the cells on the way from the top to
  * each running card: up its own line, through each ancestor's `┬` and branch, to the trunk.
  */
-export const cardSpine = (input: { depth: number; active: boolean }[], height = CARD_ROWS): { rows: SpineRow[]; width: number } => {
+export const cardSpine = (input: { depth: number; active: boolean }[], height: number | number[] = CARD_ROWS): { rows: SpineRow[]; width: number } => {
+  const tall = (i: number) => Math.max(1, Math.floor(typeof height === 'number' ? height : (height[i] ?? 1)))
+  // The card each row stands beside, and each card's top row.
+  const owner: number[] = []
+  const tops: number[] = []
+  input.forEach((_, i) => {
+    tops.push(owner.length)
+    for (let k = 0; k < tall(i); k += 1) owner.push(i)
+  })
   const lv = input.map(r => Math.max(0, Math.min(SPINE_LEVELS, r.depth)))
   const width = lv.length > 0 ? 2 * Math.max(...lv) + 2 : 0
   const goesOn = lv.map((l, i) => {
@@ -769,7 +785,7 @@ export const cardSpine = (input: { depth: number; active: boolean }[], height = 
     const lead = Array.from({ length: l }, (_, k) => (open[k] ? '│ ' : '  ')).join('')
     lines.push(`${lead}${on ? '├' : '└'}─${kids ? '┬' : ''}`.padEnd(width, '─'))
     const below = `${lead}${on ? '│' : ' '} ${kids ? '│' : ''}`.padEnd(width)
-    for (let k = 1; k < height; k += 1) lines.push(below)
+    for (let k = 1; k < tall(i); k += 1) lines.push(below)
     open[l] = on
   })
   const cells = lines.map(p => Array.from(p))
@@ -781,7 +797,7 @@ export const cardSpine = (input: { depth: number; active: boolean }[], height = 
   }
   input.forEach((r, i) => {
     if (!r.active) return
-    const top = i * height
+    const top = tops[i] ?? 0
     let x = 2 * (lv[i] ?? 0)
     for (let c = x; c < width; c += 1) mark(top, c)
     let row = top - 1
@@ -798,7 +814,7 @@ export const cardSpine = (input: { depth: number; active: boolean }[], height = 
       row -= 1
     }
   })
-  return { rows: lines.map((p, k) => ({ prefix: p, active: input[Math.floor(k / Math.max(1, height))]?.active ?? false, flow: flow[k] ?? [] })), width }
+  return { rows: lines.map((p, k) => ({ prefix: p, active: input[owner[k] ?? -1]?.active ?? false, flow: flow[k] ?? [] })), width }
 }
 
 // ---------------------------------------------------------------- Clawd

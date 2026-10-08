@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0
+
+- The agents are swimlanes again: one row per agent off the animated trunk, in the tree's order, with its state, its task, its time on a shared axis and its clock. Every agent kept (the latest 24) has its lane.
+- A lane's title, or its hotkey (`1` to `9`), opens its agent's card right under the lane, as the 0.8 card drew it (type and model, verdict, context gauge, state, messages); press it again to close it. One lane is open at a time; the trunk grows by the card's 7 rows beside it.
+- The card's `inspect ›` opens the agent view; a lane alone no longer does. The agents hint reads `1-9 card`.
+- The agent view opens at its top, not at the end; the end is followed again once you scroll down to it. Opening it puts the focus on `back`, so `b`, `p`, `n` and `i` reach the pane instead of the prompt. Its bottom has `‹ back`, `‹ prev` and `next ›` too.
+- Clawd is an SVG on the desktop app, VS Code and mobile: their font drew his block glyphs as separate boxes. The terminal keeps the animated glyphs.
+- 92 tests.
+
 ## 0.8.1
 
 - The agent's conversation opens in the Flightdeck pane itself, in place of the dashboard, instead of in a second pane. The second pane stayed behind Flightdeck until you clicked its tab: the API cannot bring a pane to the front. `$.ui.open({ focus })` is a request, refused while the pane the person holds keeps the keys, and the pane whose card was just pressed holds them; nothing else raises a pane. The `flightdeck-agent` pane is gone.
