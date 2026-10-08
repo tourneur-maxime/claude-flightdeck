@@ -37,6 +37,9 @@ export type Gate = { recent: Check[]; totals: Record<Bucket, Tally> }
 
 export type ToolNote = { tool: string; text: string; isError: boolean }
 
+/** A review agent's verdict, as its report words it: a blocker, minor points only, or nothing to fix. */
+export type ReviewVerdict = 'BLOQUANT' | 'MINEUR' | 'OK'
+
 export type AgentCard = {
   id: string
   /** The loop that spawned it: another agent's id, or null for the main loop. */
@@ -55,6 +58,8 @@ export type AgentCard = {
   lastStop: string | null
   tools: ToolNote[]
   answer: string
+  /** The verdict read from its report, for an agent whose task matches `verdictPattern`; null otherwise. */
+  verdict: ReviewVerdict | null
 }
 
 /** A model loop whose id matches no card: a workflow agent, a compaction or a memory fork. */

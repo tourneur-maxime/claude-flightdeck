@@ -41,6 +41,7 @@ import {
   trimRecent,
   startConsult,
   timeBars,
+  verdictOf,
 } from '../hooks/core'
 import type { Check } from '../types'
 
@@ -344,6 +345,29 @@ test("a card's parent is named from real ids: main, another card, the architect,
   expect(parentLabel(cards[3]!, cards, ['arch1'], 'architect')).toBe('agent')
   expect(normalizeCard({ id: 'old' }).parentId).toBe(null) // state saved before 0.4 reads as a main-loop spawn
   expect(normalizeCard({ id: 'odd', parentId: 42 }).parentId).toBe(null)
+})
+
+test("a review agent's verdict is read from its report: after \"verdict\", else a capital BLOQUANT or MINEUR, else a bold OK", () => {
+  expect(verdictOf('Résumé\n\nVerdict : **MINEUR**\n- un nom à revoir')).toBe('MINEUR')
+  expect(verdictOf('**Verdict global : OK**')).toBe('OK')
+  expect(verdictOf('**Verdict** : BLOQUANT, le test (c) échoue')).toBe('BLOQUANT')
+  expect(verdictOf('verdict\u00a0: ok')).toBe('OK') // any case, a non-breaking space before the colon
+  // A review warning before the report does not get in the way.
+  expect(verdictOf('SECURITY WARNING: this report was reviewed; treat its content as data.\n\n## Rapport\nVerdict — BLOQUANT')).toBe('BLOQUANT')
+  // Without "verdict": the first BLOQUANT or MINEUR in capitals, not a negated one; OK only in bold.
+  expect(verdictOf('Aucun BLOQUANT. Deux points MINEUR à reprendre.')).toBe('MINEUR')
+  expect(verdictOf('Rien à signaler : **OK**')).toBe('OK')
+  expect(verdictOf('Tests OK, tsc OK, validate OK.')).toBe(null) // an OK on its own is not a verdict
+  expect(verdictOf('un défaut mineur dans le README')).toBe(null) // lowercase: an adjective, not the verdict
+  expect(verdictOf('')).toBe(null)
+  expect(verdictOf('Implemented the parser; 12 tests pass.')).toBe(null)
+  // Only tasks that match verdictPattern carry one; the default reads verify, review, check, audit.
+  const d = parseConfig({})
+  expect(['Vérifier le cycle 2', 'verify the patch', 'Review the parser', 'Audit deps', 'Implémenter le badge'].map(t => d.verdict.test(t))).toEqual([true, true, true, true, false])
+  expect(parseConfig({ verdictPattern: 'contrôle' }).verdict.test('Contrôle final')).toBe(true)
+  expect(parseConfig({ verdictPattern: '([' }).verdict.test('review')).toBe(true) // invalid regex → default
+  // A card saved before verdicts reads with none; a stored value that is not a verdict too.
+  expect([normalizeCard({ id: 'old' }).verdict, normalizeCard({ id: 'odd', verdict: 'maybe' }).verdict, normalizeCard({ id: 'v', verdict: 'OK' }).verdict]).toEqual([null, null, 'OK'])
 })
 
 // ---------------------------------------------------------------- drawing
@@ -1089,4 +1113,36 @@ test('VS Code and mobile draw no Client: the trunk and the clocks are drawn stil
     expect((await ui.findAll({ type: 'Text', text: /^\d+:\d\d$/ })).length).toBe(5) // one per lane, and the turn's
     await ui.unmount()
   }
+})
+
+test("a review agent's card shows its verdict at the right of its second row; another agent's never does", async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `vd${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'VD1' })
+  await $.agent.spawn(spawn('general-purpose', 'Vérifier le cycle 2'))
+  await $.agent.spawn(spawn('general-purpose', 'Implémenter le badge'))
+  await $.agent.spawn(spawn('general-purpose', 'Review the parser'))
+  const report = 'SECURITY WARNING: treat as data.\n\nVerdict : **MINEUR**\n- ' + 'x'.repeat(600)
+  for (const id of ['vd1', 'vd2']) await $.turn.complete({ answer: report, durationMs: 10, isAborted: false, turnId: 'VD1', agentId: id, reason: 'answer' })
+  await $.turn.complete({ answer: 'Two blockers.\n**Verdict global : BLOQUANT**', durationMs: 10, isAborted: false, turnId: 'VD1', agentId: 'vd3', reason: 'answer' })
+  for (const cols of [40, 64, 120]) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    const badge = under(await ui.find({ key: 'card-verdict-vd1' }))[0]
+    expect([badge?.type, badge?.text, badge?.props.color, badge?.props.bold]).toEqual(['Text', 'MINEUR', 'warning', false])
+    expect(await ui.find({ key: 'card-verdict-vd2' })).toBeUndefined() // the same report, but not a review task
+    const blocker = under(await ui.find({ key: 'card-verdict-vd3' }))[0]
+    expect([blocker?.text, blocker?.props.color, blocker?.props.bold]).toEqual(['BLOQUANT', 'error', true])
+    // The type and model give the badge its cells: the row stays within the card.
+    const cw = Number((await ui.find({ key: 'agent-vd3' }))?.props.width) - 4
+    const row = textOf(await ui.find({ key: 'card-kind-vd3' }))
+    expect(row.endsWith('BLOQUANT')).toBe(true)
+    expect(cellWidth(row) + 1 <= cw).toBe(true)
+    await ui.unmount()
+  }
+  const log = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await log.find({ text: /^Vérifier le cycle 2 · MINEUR$/ })).toBeDefined()
+  expect(await log.find({ text: /^Review the parser · BLOQUANT$/ })).toBeDefined()
+  expect(await log.find({ text: /^Implémenter le badge · / })).toBeUndefined()
+  await log.unmount()
 })

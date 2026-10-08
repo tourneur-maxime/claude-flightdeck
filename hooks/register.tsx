@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentCard, Architect, Bucket, Check, Gate, Layout, LogLine, Loop, Main, Roster, Turn, Usage, View } from '../types'
+import type { AgentCard, Architect, Bucket, Check, Gate, Layout, LogLine, Loop, Main, ReviewVerdict, Roster, Turn, Usage, View } from '../types'
 import {
   DEFAULT_ARCHITECT,
   DEFAULT_GATE,
@@ -22,6 +22,7 @@ import {
   cardSpine,
   cardStats,
   cardTitle,
+  cellWidth,
   CLAWD,
   CLAWD_COLORS,
   consultTimeline,
@@ -64,6 +65,7 @@ import {
   startConsult,
   stepLoop,
   timeBars,
+  verdictOf,
 } from './core'
 import type { ClawdSpan, Config, Panel } from './core'
 
@@ -509,16 +511,19 @@ export const register: Register = (on, options) => {
       return done
     }
     const cards = await getCards($)
-    if (cards.some(c => c.id === id)) {
+    const card = cards.find(c => c.id === id)
+    if (card) {
       const status = e.reason === 'answer' ? 'done' : e.reason === 'aborted' ? 'stopped' : 'failed'
+      // A review agent's verdict, read from its whole report (before the cut kept for the expanded card).
+      const verdict = cfg.verdict.test(card.description) ? verdictOf(e.answer ?? '') : null
       await update($, agents, list =>
         listOf<unknown>(list)
           .map(normalizeCard)
-          .map(c => (c.id === id ? { ...c, status, endedAt: now, answer: shorten(e.answer, 400) } : c)),
+          .map(c => (c.id === id ? { ...c, status, endedAt: now, answer: shorten(e.answer, 400), verdict } : c)),
       )
-      const card = cards.find(c => c.id === id)
-      const took = card ? fmtDuration(now - card.spawnedAt) : ''
+      const took = fmtDuration(now - card.spawnedAt)
       await say($, await whoIs($, id), status === 'done' ? `done · ${took}` : status, status === 'done' ? 'done' : 'error', id)
+      if (verdict) await say($, 'verdict', `${shorten(cardTitle(card), 24)} · ${verdict}`, 'done', id)
     } else {
       await update($, loops, l => listOf<Loop>(l).map(x => (x.id === id ? { ...x, isDone: true, lastAt: now } : x)))
     }
@@ -751,6 +756,7 @@ export const register: Register = (on, options) => {
     }
 
     // ---- agents: a card per agent, one under the other, off one trunk
+    const verdictColors: Record<ReviewVerdict, string> = { BLOQUANT: C.warn, MINEUR: C.amber, OK: C.gate }
     const statusColor = (c: AgentCard) => (c.status === 'failed' ? C.warn : c.status === 'done' ? C.gate : C.agent)
     const glyph = (c: AgentCard) => (c.status === 'running' ? '◐' : c.status === 'done' ? '✓' : c.status === 'failed' ? '✗' : '■')
     const expandOnPress = (id: string) => () =>
@@ -829,11 +835,18 @@ export const register: Register = (on, options) => {
                   <Box key={`card-title-${c.id}`} width={cw} height={1} overflow="hidden">
                     <Button key={`card-${c.id}`} plain {...hot} label={shortenCells(cardTitle(c), cw - (i < 9 ? 3 : 0))} onPress={expandOnPress(c.id)} />
                   </Box>
-                  {/* A row of its own, its right end free for a badge beside the text. */}
+                  {/* A row of its own: its type and model, and at its right end a review agent's verdict. */}
                   <Box key={`card-kind-${c.id}`} justifyContent="space-between" width={cw}>
                     <Text color={C.dim} wrap="truncate">
-                      {cardKind(c, parent, cw)}
+                      {cardKind(c, parent, c.verdict ? cw - cellWidth(c.verdict) - 1 : cw)}
                     </Text>
+                    {c.verdict ? (
+                      <Box key={`card-verdict-${c.id}`} flexShrink={0}>
+                        <Text color={verdictColors[c.verdict]} bold={c.verdict === 'BLOQUANT'}>
+                          {c.verdict}
+                        </Text>
+                      </Box>
+                    ) : null}
                   </Box>
                   <Text dimColor wrap="truncate">
                     {shortenCells(cardStats(c), cw)}

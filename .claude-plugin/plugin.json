@@ -61,6 +61,12 @@
       "type": "boolean",
       "default": true
     },
+    "verdictPattern": {
+      "title": "Verdict pattern",
+      "description": "Regular expression (case-insensitive) for the agent tasks (their description) whose final report carries a verdict: BLOQUANT, MINEUR or OK, shown on the card",
+      "type": "string",
+      "default": "v[ée]rif|verify|review|check|audit"
+    },
     "matchDescriptions": {
       "title": "Match agent descriptions",
       "description": "Also count an agent type as the architect when its description (not just its name) matches the pattern",

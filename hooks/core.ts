@@ -13,6 +13,7 @@ import type {
   Main,
   Moment,
   Receipt,
+  ReviewVerdict,
   Roster,
   Tally,
   ToolNote,
@@ -60,6 +61,8 @@ export const normalizeGate = (stored: unknown): Gate => {
   }
 }
 
+const VERDICTS: readonly unknown[] = ['BLOQUANT', 'MINEUR', 'OK']
+
 export const normalizeCard = (stored: unknown): AgentCard => {
   const c = normalize<AgentCard>(
     {
@@ -77,11 +80,13 @@ export const normalizeCard = (stored: unknown): AgentCard => {
       lastStop: null,
       tools: [],
       answer: '',
+      verdict: null,
     },
     stored,
   )
   // A card saved before parents were kept reads as spawned by the main loop.
-  return typeof c.parentId === 'string' ? c : { ...c, parentId: null }
+  const withParent = typeof c.parentId === 'string' ? c : { ...c, parentId: null }
+  return VERDICTS.includes(withParent.verdict as ReviewVerdict) ? withParent : { ...withParent, verdict: null }
 }
 
 export const normalizeLog = (stored: unknown): LogLine[] =>
@@ -112,6 +117,8 @@ export type Config = {
   statusLine: boolean
   mascot: boolean
   cost: boolean
+  /** The agent tasks (their description) whose report carries a verdict to read. */
+  verdict: RegExp
 }
 
 const safeRegExp = (source: string, fallback: string) => {
@@ -121,6 +128,9 @@ const safeRegExp = (source: string, fallback: string) => {
     return new RegExp(fallback, 'i')
   }
 }
+
+/** The agent tasks whose report carries a verdict, by default: verify, review, check, audit. */
+export const DEFAULT_VERDICT_PATTERN = 'v[ée]rif|verify|review|check|audit'
 
 /** The plugin's `/config` values, read leniently: anything malformed falls back to the default. */
 export const parseConfig = (o: Readonly<Record<string, unknown>>): Config => {
@@ -145,6 +155,7 @@ export const parseConfig = (o: Readonly<Record<string, unknown>>): Config => {
     statusLine: bool('statusLine', true),
     mascot: str('mascot', 'on') !== 'off',
     cost: str('cost', 'off') === 'on',
+    verdict: safeRegExp(str('verdictPattern', ''), DEFAULT_VERDICT_PATTERN),
   }
 }
 
@@ -691,6 +702,27 @@ export const handbackOf = (text: string): { from: string; body: string } | null 
 export const adviceLine = (report: string) => {
   const first = report.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('[') && !l.startsWith('<')) ?? ''
   return shorten(first.replace(/\*\*|__/g, '').replace(/^[#>*\s-]+/, ''), 160)
+}
+
+// ---------------------------------------------------------------- review verdicts
+
+/** `Verdict : **MINEUR**`, `**Verdict global : OK**`, `Verdict — BLOQUANT`: the word right after "verdict". */
+const VERDICT_SAID = /verdict\b[\s*_]*(?:global[\s*_]*)?[:：\-–—]?[\s*_]*(BLOQUANT|MINEUR|OK)\b/i
+/**
+ * Otherwise the first BLOQUANT or MINEUR written in capitals, unless negated ("aucun BLOQUANT",
+ * "no MINEUR"), or an OK in bold: an OK on its own is too common to be a verdict.
+ */
+const VERDICT_WORD = /(?<!\b(?:[Aa]ucune?|[Pp]as de|[Ss]ans|[Nn]o|[Zz]ero|0)\s+(?:\*\*)?)\b(BLOQUANT|MINEUR)\b|\*\*\s*(OK)\s*\*\*/
+/**
+ * The verdict a review agent's report gives, read from its text: `BLOQUANT`, `MINEUR`, `OK`, or
+ * null when it states none. A warning or a header before it does not matter. A text reading.
+ */
+export const verdictOf = (answer: string): ReviewVerdict | null => {
+  const said = VERDICT_SAID.exec(answer)?.[1]
+  if (said) return said.toUpperCase() as ReviewVerdict
+  const m = VERDICT_WORD.exec(answer)
+  const word = m?.[1] ?? m?.[2]
+  return word ? (word.toUpperCase() as ReviewVerdict) : null
 }
 
 export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.spawnedAt
