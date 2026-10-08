@@ -18,6 +18,12 @@ const STEP_MS = 110
 type Level = 'head' | 'trail' | 'fade' | 'rest'
 const TAIL: Level[] = ['head', 'head', 'trail', 'fade', 'fade']
 
+/** Cells between two comets' heads. */
+const PERIOD = 24
+
+/** How far cell `i` is behind the nearest head at `phase`: 0 on a head, up to PERIOD - 1. */
+const railDistance = (phase: number, i: number) => (((phase - i) % PERIOD) + PERIOD) % PERIOD
+
 const Rail: ClientModule<Props, State> = (props, surface) => {
   const { Box, Text } = surface.elements
   const ref = surface.state?.ref ?? { phase: 0, active: props.active }
@@ -43,20 +49,14 @@ const Rail: ClientModule<Props, State> = (props, surface) => {
     )
   }
 
-  // A comet every 24 cells, moving left to right on the wire itself: a 2-cell head drawn thick
-  // and bold, then a 3-cell trail in the line's own glyph, fading (bright, then faint) into the
-  // dim rest of the line.
-  const level = new Map<number, Level>()
-  for (let base = 0; base < width + 24; base += 24) {
-    const head = (base + ref.phase) % (width + 24)
-    TAIL.forEach((lv, d) => {
-      if (head - d >= 0 && head - d < width) level.set(head - d, lv)
-    })
-  }
+  // A comet every PERIOD cells, moving left to right on the wire itself: a 2-cell head drawn
+  // thick and bold, then a 3-cell trail in the line's own glyph, fading (bright, then faint) into
+  // the dim rest of the line. A cell's level comes from its own distance behind the nearest head,
+  // so the comets stay PERIOD apart at any width: none wraps round to close the gap.
   // Runs, not cells: consecutive cells of one level share a Text, a handful of nodes per frame.
   const runs: { text: string; lv: Level }[] = []
   cells.forEach((ch, i) => {
-    const lv: Level = level.get(i) ?? 'rest'
+    const lv: Level = TAIL[railDistance(ref.phase, i)] ?? 'rest'
     const glyph = lv === 'head' ? '━' : ch
     const last = runs[runs.length - 1]
     if (last && last.lv === lv) last.text += glyph

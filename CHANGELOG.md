@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.2
+
+- The comets on the links (main to the architect, to the gate, to the agents) stay 24 cells apart. They looped over the rail's width plus 24, so on a rail whose width is not a multiple of 24 the gap between the last comet and the first closed (to 16 cells on a 58-cell rail) each time one came back in at the left. A cell's level now comes from its own distance behind the nearest head, as on the agents' trunk.
+- 93 tests.
+
 ## 0.9.1
 
 - No digit before a lane's title: the lanes lose their hotkeys `1` to `9` and the `1-9 card` hint; a click on the title opens the card.

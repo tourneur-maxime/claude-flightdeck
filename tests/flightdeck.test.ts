@@ -1260,6 +1260,37 @@ test('rails carry a comet on the wire: a 2-cell thick head, a 3-cell fading trai
   await idle.unmount()
 })
 
+test('rail comets stay 24 cells apart at every step and width: none wraps round to close the gap', async ($, on) => {
+  engine(on)
+  on('tool.check', () => ({ decision: 'allow' }))
+  await $.turn.start({ text: 'go', turnId: 'GP1' })
+  await $.tool.check({ tool: 'Read', input: { file_path: '/a' }, tool_use_id: 'gp-k1' })
+  for (const cols of [40, 64, 86, 120]) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    let before: number[] | null = null
+    let seenTwo = false
+    for (let step = 0; step < 60; step += 1) {
+      await ui.advance(110)
+      // Where each head's run starts, cell by cell along the rail.
+      const heads: number[] = []
+      let at = 0
+      for (const r of await runsOf(ui, 'link-gate')) {
+        if (r.bold === true) heads.push(at)
+        at += Array.from(r.text).length
+      }
+      // A head cut at the left edge starts at 0; the others are exactly 24 apart.
+      const whole = heads.filter(h => h > 0)
+      for (let k = 1; k < whole.length; k += 1) expect((whole[k] ?? 0) - (whole[k - 1] ?? 0)).toBe(24)
+      if (whole.length >= 2) seenTwo = true
+      // Every head moves one cell right per frame, a new one entering at the left.
+      if (before) for (const h of whole) expect(h <= 1 || before.includes(h - 1)).toBe(true)
+      before = heads
+    }
+    if (cols >= 64) expect(seenTwo).toBe(true)
+    await ui.unmount()
+  }
+})
+
 test('the agents title never runs past the frame, alone on its row', async ($, on) => {
   engine(on)
   let n = 0
