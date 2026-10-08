@@ -8,7 +8,8 @@
 - Clawd stands at the top of the pane, centred above the model line, instead of at its foot; the docked pane no longer stretches to its full height to centre him.
 - The `maxCards` option is gone: with a list, there is nothing to cap side by side. A value left in settings is ignored.
 - The desktop's SVG time axis draws a bar for every card, in the list's order.
-- 52 tests.
+- A card's rows are cut in terminal cells, not characters (`cellWidth`, `shortenCells`): a CJK or emoji title takes 2 cells a character, is never cut mid code point, and its row is held to one line, so a card stays 6 rows tall beside the trunk.
+- 54 tests.
 
 ## 0.5.3
 

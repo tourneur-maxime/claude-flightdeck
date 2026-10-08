@@ -1,4 +1,4 @@
-// Clawd at the foot of the pane, on the surface's frame clock: he waves while agents run, blinks
+// Clawd at the head of the pane, on the surface's frame clock: he waves while agents run, blinks
 // now and then while the main loop works, and stands still when nothing runs. The glyphs come in
 // as props (CLAWD in core.ts); only this region redraws, the pane does not.
 import type { ClientModule } from 'claude-code'
