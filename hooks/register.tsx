@@ -19,6 +19,7 @@ import {
   bucketOf,
   CARD_ROWS,
   cardKind,
+  cardMail,
   cardSpine,
   cardStats,
   cardTitle,
@@ -28,6 +29,7 @@ import {
   consultTimeline,
   describeInput,
   endConsult,
+  FLASH_MS,
   fitLegend,
   fmtClock,
   fmtDuration,
@@ -37,37 +39,44 @@ import {
   gateSummary,
   gauge,
   isAdvising,
+  isFlashing,
   isLoopActive,
   kTokens,
   limitLabel,
   listOf,
   logRows,
   MAX_CARDS,
+  messageExcerpt,
   momentOf,
   normalize,
   normalizeCard,
   normalizeGate,
   normalizeLog,
+  noteMessage,
   noteTool,
   PALETTES,
   SVG_COLORS,
   parseConfig,
   parentLabel,
+  pickPending,
   prettyModel,
   promptLine,
   handbackOf,
   adviceLine,
   receiptOf,
   recordCheck,
+  redact,
+  resolveRecipient,
   settleCheck,
   shorten,
   shortenCells,
   startConsult,
   stepLoop,
+  taskIdOf,
   timeBars,
   verdictOf,
 } from './core'
-import type { ClawdSpan, Config, Panel } from './core'
+import type { ClawdSpan, Config, Panel, PendingMessage } from './core'
 
 const PANE = 'flightdeck'
 const TITLE = 'Flightdeck'
@@ -220,6 +229,46 @@ async function noteMode($: EngineInterface, mode: string | undefined) {
   if (mode) await update($, main, m => (normalize(DEFAULT_MAIN, m).mode === mode ? normalize(DEFAULT_MAIN, m) : { ...normalize(DEFAULT_MAIN, m), mode }))
 }
 
+/** A message leaving at session.send, as it will wait for its delivery: who sent it, to whom, what it says. */
+async function outgoing($: EngineInterface, e: { to: string; text: string; agentId?: string }): Promise<PendingMessage> {
+  const [cards, listed] = await Promise.all([getCards($), $.agent.list().catch(() => [])])
+  return { from: e.agentId ?? 'main', to: resolveRecipient(e.to, cards, listed), text: messageExcerpt(e.text, 80), at: await $.clock.now() }
+}
+
+/**
+ * A delivery at session.receive: a task notification marks its agent's card; a message from the
+ * main loop or an agent completes the send waiting for it, counts on both cards, resumes an ended
+ * recipient and goes to the log.
+ */
+async function noteDelivery($: EngineInterface, cfg: Config, pending: PendingMessage[], e: { origin: { kind: string }; text: string; agentId?: string }) {
+  const to = e.agentId ?? 'main'
+  // The main loop told an agent finished: noted on its card, not counted as a message.
+  if (e.origin.kind === 'task-notification') {
+    const id = taskIdOf(e.text)
+    if (id) await update($, agents, list => listOf<unknown>(list).map(normalizeCard).map(c => (c.id === id ? { ...c, notified: true } : c)))
+    return
+  }
+  // A message from the main loop or another agent; other deliveries (a relay, a trigger) are not.
+  if (e.origin.kind !== 'coordinator' && e.origin.kind !== 'peer' && e.origin.kind !== 'peer-send-message') return
+  const i = pickPending(pending, to)
+  const p = i >= 0 ? pending.splice(i, 1)[0] : undefined
+  const from = p?.from ?? (e.origin.kind === 'coordinator' ? 'main' : null)
+  if (from === to) return
+  const at = await $.clock.now()
+  const cards = await getCards($)
+  await update($, agents, list => noteMessage(listOf<unknown>(list).map(normalizeCard), { from, to, at }))
+  const label = (id: string | null, n: number) => {
+    if (id === 'main') return 'main'
+    const card = cards.find(c => c.id === id)
+    return card ? shortenCells(cardTitle(card), n) : 'agent'
+  }
+  const text = shortenCells(p?.text ?? messageExcerpt(e.text, 80), 60)
+  await say($, label(from, 12), `→ ${label(to, 20)} · « ${text} »`, 'message', to !== 'main' ? to : from !== 'main' ? from : null)
+  // The flash ends with no event of its own: draw again once it is over.
+  $.clock.after(FLASH_MS + 50, () => $.ui.invalidate('ui.render'))
+  await refreshStatus($, cfg)
+}
+
 // ---------------------------------------------------------------- hooks
 
 export const register: Register = (on, options) => {
@@ -227,6 +276,9 @@ export const register: Register = (on, options) => {
   const C = PALETTES[cfg.palette]
   // tool.check carries no loop id; the tool.call around it does, keyed by the call's id.
   const callLoop = new Map<string, string | null>()
+  // Messages seen leaving (session.send), each waiting for the delivery (session.receive) that
+  // completes it: the two share no id, so they are matched in order (pickPending).
+  const pending: PendingMessage[] = []
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -431,6 +483,29 @@ export const register: Register = (on, options) => {
     else if (isEdit) await say($, await whoIs($, e.agentId), text, 'info', e.agentId ?? null)
     if (isSettled || !didRun) await refreshStatus($, cfg)
     return ran
+  })
+
+  // A message between loops: seen as it leaves, counted when it is delivered. Both hooks only
+  // watch: the message goes on as it came, and a failure here never holds it back.
+  on('session.send', async ($, e, next) => {
+    const p = await outgoing($, e).catch(() => null)
+    // Waiting before it goes: its delivery may be raised while it is being sent.
+    if (p) pending.splice(0, Math.max(0, pending.length - 19), p)
+    const drop = () => {
+      const i = p ? pending.indexOf(p) : -1
+      if (i >= 0) pending.splice(i, 1)
+    }
+    const sent = await next(e).catch((err: unknown) => {
+      drop()
+      throw err
+    })
+    if (!sent.isDelivered) drop()
+    return sent
+  })
+
+  on('session.receive', async ($, e, next) => {
+    await noteDelivery($, cfg, pending, e).catch(() => undefined)
+    return next(e)
   })
 
   // A server-side review tool never reaches tool.call: it shows only in the assistant's rows.
@@ -816,17 +891,19 @@ export const register: Register = (on, options) => {
             {tree.map(({ card: c, parent }, i) => {
               const isViewed = viewed === c.id
               const isMax = c.lastStop === 'max_tokens'
+              // A message just sent or received: the border in amber for FLASH_MS.
+              const flash = isFlashing(c, now)
               // Digits 1-9 only: the cards after the ninth expand by a press.
               const hot = i < 9 ? { hotkey: String(i + 1) } : {}
-              // Four rows between the borders, each one row high (truncated), so a card is
+              // Five rows between the borders, each one row high (truncated), so a card is
               // CARD_ROWS tall, as the trunk beside it counts.
               return (
                 <Box
                   key={`agent-${c.id}`}
                   flexDirection="column"
                   borderStyle={isViewed ? 'double' : 'round'}
-                  borderColor={isMax ? C.warn : C.agent}
-                  borderDimColor={c.status !== 'running' && !isViewed}
+                  borderColor={isMax ? C.warn : flash ? C.amber : C.agent}
+                  borderDimColor={c.status !== 'running' && !isViewed && !flash}
                   width={cardW}
                   paddingX={1}
                   flexShrink={0}
@@ -855,6 +932,11 @@ export const register: Register = (on, options) => {
                     {/* The clock takes at most 5 cells (12h59) after the state. */}
                     <Text color={isMax ? C.warn : statusColor(c)}>{shortenCells(`${glyph(c)} ${isMax ? 'max_tokens' : c.status}`, Math.max(1, cw - 6)) + ' '}</Text>
                     <Box flexShrink={0}>{clock(`card-clock-${c.id}`, c.spawnedAt, c.endedAt, C.dim)}</Box>
+                  </Box>
+                  <Box key={`card-mail-${c.id}`} width={cw}>
+                    <Text color={flash ? C.amber : C.dim} wrap="truncate">
+                      {shortenCells(cardMail(c), cw)}
+                    </Text>
                   </Box>
                 </Box>
               )
@@ -946,7 +1028,7 @@ export const register: Register = (on, options) => {
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
     const colorOf = (l: LogLine) =>
-      l.kind === 'error' ? C.warn : l.kind === 'consult' ? C.arch : l.who === 'main' ? C.main : l.who === 'gate' ? C.gate : l.who === 'you' ? C.text : C.agent
+      l.kind === 'error' ? C.warn : l.kind === 'consult' ? C.arch : l.kind === 'message' ? C.amber : l.who === 'main' ? C.main : l.who === 'gate' ? C.gate : l.who === 'you' ? C.text : C.agent
     const logPanel = (w: number) => (
       <Box flexDirection="column" borderStyle="round" borderColor={C.faint} paddingX={1} width={w}>
         <Text dimColor>{viewed ? 'session log · this agent' : 'session log'}</Text>

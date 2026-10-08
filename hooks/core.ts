@@ -81,12 +81,24 @@ export const normalizeCard = (stored: unknown): AgentCard => {
       tools: [],
       answer: '',
       verdict: null,
+      sent: 0,
+      received: 0,
+      lastMessageAt: null,
+      notified: false,
     },
     stored,
   )
-  // A card saved before parents were kept reads as spawned by the main loop.
-  const withParent = typeof c.parentId === 'string' ? c : { ...c, parentId: null }
-  return VERDICTS.includes(withParent.verdict as ReviewVerdict) ? withParent : { ...withParent, verdict: null }
+  const count = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0)
+  return {
+    ...c,
+    // A card saved before parents were kept reads as spawned by the main loop.
+    parentId: typeof c.parentId === 'string' ? c.parentId : null,
+    verdict: VERDICTS.includes(c.verdict) ? c.verdict : null,
+    sent: count(c.sent),
+    received: count(c.received),
+    lastMessageAt: typeof c.lastMessageAt === 'number' ? c.lastMessageAt : null,
+    notified: c.notified === true,
+  }
 }
 
 export const normalizeLog = (stored: unknown): LogLine[] =>
@@ -95,7 +107,7 @@ export const normalizeLog = (stored: unknown): LogLine[] =>
     who: String(l.who ?? ''),
     text: String(l.text ?? ''),
     agentId: typeof l.agentId === 'string' ? l.agentId : null,
-    kind: l.kind === 'error' || l.kind === 'consult' || l.kind === 'done' ? l.kind : 'info',
+    kind: l.kind === 'error' || l.kind === 'consult' || l.kind === 'done' || l.kind === 'message' ? l.kind : 'info',
   }))
 
 // ---------------------------------------------------------------- config
@@ -446,12 +458,22 @@ export const receiptOf = (t: Turn, o: { durationMs: number; agentsSince: number;
 
 type StepUsage = { input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; output_tokens?: number } | null
 
-/** A card after one of its model requests: its context is the latest step's whole input; output adds up. */
+/**
+ * An ended card (done, stopped, failed) running again: a message resumed it under its own id. Its
+ * clock runs on from its spawn; turn.complete ends it again.
+ */
+export const resumeCard = (c: AgentCard): AgentCard =>
+  c.status === 'done' || c.status === 'stopped' || c.status === 'failed' ? { ...c, status: 'running', endedAt: null } : c
+
+/**
+ * A card after one of its model requests: its context is the latest step's whole input; output adds
+ * up. A step on an ended card means it was resumed (no event says so): it runs again.
+ */
 export const applyStep = (c: AgentCard, s: { model: string; usage: StepUsage; stopReason: string | null }): AgentCard => {
   const u = s.usage ?? {}
   const ctx = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
   return {
-    ...c,
+    ...resumeCard(c),
     model: c.model || s.model,
     steps: c.steps + 1,
     ctx: ctx > 0 ? ctx : c.ctx,
@@ -459,6 +481,74 @@ export const applyStep = (c: AgentCard, s: { model: string; usage: StepUsage; st
     lastStop: s.stopReason,
   }
 }
+
+// ---------------------------------------------------------------- messages between agents
+
+/** A message seen leaving at session.send, waiting for the session.receive that delivers it. */
+export type PendingMessage = { from: string; to: string | null; text: string; at: number }
+
+/** An agent as `$.agent.list()` lists it, as far as addressing goes. */
+export type Addressee = { id: string; name?: string; teammateId?: string }
+
+/**
+ * Whom a SendMessage `to` means, by id: a card's id, or a listed agent's id, name or team address
+ * (a ` [a1b2c3]` suffix dropped), or the one card spawned under that name (a card's `type` holds
+ * the Agent call's `name` when it had one). Null when nothing matches: the main loop, another
+ * session, or an agent gone from the list with no card.
+ */
+export const resolveRecipient = (to: string, cards: AgentCard[], listed: readonly Addressee[]): string | null => {
+  const t = to.replace(/\s*\[[^\]]*\]\s*$/, '').trim()
+  if (!t) return null
+  const card = cards.find(c => c.id === t || c.id === to)
+  if (card) return card.id
+  const agent = listed.find(a => a.id === t || a.name === t || a.teammateId === t)
+  if (agent) return agent.id
+  const named = cards.filter(c => c.type === t)
+  return named.length === 1 ? named[0]?.id ?? null : null
+}
+
+/**
+ * Which waiting message a delivery to `to` completes: there is no id common to a send and its
+ * receive, so the latest one sent to that recipient, else the latest one whose recipient was not
+ * resolved, else the latest of all. -1 when none waits.
+ */
+export const pickPending = (pending: readonly PendingMessage[], to: string): number => {
+  const last = (ok: (p: PendingMessage) => boolean) => {
+    for (let i = pending.length - 1; i >= 0; i -= 1) if (ok(pending[i] as PendingMessage)) return i
+    return -1
+  }
+  const exact = last(p => p.to === to)
+  if (exact >= 0) return exact
+  const open = last(p => p.to === null)
+  return open >= 0 ? open : pending.length - 1
+}
+
+/** A message for the log: tags stripped, credentials masked, on one line, cut to `cells`. */
+export const messageExcerpt = (text: string, cells: number) => shortenCells(redact(text.replace(/<[^>]*>/g, ' ')), cells)
+
+/** The agent a task notification is about: its `<task-id>`. */
+export const taskIdOf = (text: string) => /<task-id>\s*([^<\s]+)\s*<\/task-id>/.exec(text)?.[1] ?? null
+
+/**
+ * The cards after one message from `from` to `to` (each `main` or an agent's id): the sender's
+ * `sent` and the recipient's `received` count it, both note when; an ended recipient runs again,
+ * the message having resumed it.
+ */
+export const noteMessage = (cards: AgentCard[], m: { from: string | null; to: string; at: number }): AgentCard[] =>
+  cards.map(c => {
+    if (c.id === m.to) return { ...resumeCard(c), received: c.received + 1, lastMessageAt: m.at }
+    if (c.id === m.from) return { ...c, sent: c.sent + 1, lastMessageAt: m.at }
+    return c
+  })
+
+/** How long a card's border flashes after a message. */
+export const FLASH_MS = 2500
+
+export const isFlashing = (c: AgentCard, now: number) =>
+  c.lastMessageAt !== null && now >= c.lastMessageAt && now - c.lastMessageAt < FLASH_MS
+
+/** A card's fifth row: the messages it received and sent, `✉ 2 in · 1 out`, or `✉ —` before any. */
+export const cardMail = (c: AgentCard) => (c.sent + c.received > 0 ? `✉ ${c.received} in · ${c.sent} out` : '✉ —')
 
 export const noteTool = (c: AgentCard, n: ToolNote): AgentCard => ({ ...c, tools: [...c.tools, n].slice(-3) })
 
@@ -486,8 +576,8 @@ export const timeBars = (cards: AgentCard[], now: number, width: number) => {
 
 // ---------------------------------------------------------------- layout
 
-/** Rows one agent card takes in the list: its two borders, the title, type and model, tokens and status. */
-export const CARD_ROWS = 6
+/** Rows one agent card takes in the list: its two borders, the title, type and model, tokens, status and messages. */
+export const CARD_ROWS = 7
 
 /** Cards kept in state, the oldest dropped past it; the list draws every one. */
 export const MAX_CARDS = 24

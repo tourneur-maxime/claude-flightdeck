@@ -60,6 +60,14 @@ export type AgentCard = {
   answer: string
   /** The verdict read from its report, for an agent whose task matches `verdictPattern`; null otherwise. */
   verdict: ReviewVerdict | null
+  /** Messages it sent (SendMessage, seen at session.send and matched at session.receive). */
+  sent: number
+  /** Messages it received, from the main loop or another agent. */
+  received: number
+  /** When it last sent or received one; the card's border flashes for a moment after. */
+  lastMessageAt: number | null
+  /** The main loop was told it finished (a task notification naming it). */
+  notified: boolean
 }
 
 /** A model loop whose id matches no card: a workflow agent, a compaction or a memory fork. */
@@ -70,7 +78,7 @@ export type LogLine = {
   who: string
   text: string
   agentId: string | null
-  kind: 'info' | 'error' | 'consult' | 'done'
+  kind: 'info' | 'error' | 'consult' | 'done' | 'message'
 }
 
 export type Turn = {
