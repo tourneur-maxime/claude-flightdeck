@@ -911,7 +911,7 @@ export const register: Register = (on, options) => {
     }
 
     // ---- log: whatever rows the other panels leave, 4 to 8
-    // Clawd stands under the log (not inline, nor in a pane narrower than he can stand in).
+    // Clawd heads the pane (not inline, nor in a pane narrower than he can stand in): his 3 rows come from the log.
     const showMascot = cfg.mascot && e.props.bodyColumns >= 40
     const used =
       2 +
@@ -1075,7 +1075,7 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // ---- Clawd, centred at the foot: waves while agents run, blinks while the main loop works, still otherwise
+    // ---- Clawd, centred at the top: waves while agents run, blinks while the main loop works, still otherwise
     const clawdSpan = (sp: ClawdSpan) =>
       sp.on === 'lid' ? (
         <Text color={CLAWD_COLORS.eyes} backgroundColor={CLAWD_COLORS.body}>
@@ -1088,30 +1088,24 @@ export const register: Register = (on, options) => {
       ) : (
         <Text color={CLAWD_COLORS.body}>{sp.text}</Text>
       )
-    // Docked, the pane's room is bodyRows whatever its tree: the root asks for at least that many
-    // rows (a floor, so a taller tree still grows), and Clawd stands in a column that takes the rows
-    // the panels leave and centres him in them; with none left it is his own 3 rows, under the log.
-    // Inline the frame fits the tree: no floor, and the column takes no more than Clawd.
-    const docked = e.props.placement === 'dock'
+    // His own 3 rows, first in the tree: the pane asks for no more rows than it draws.
     const mascot = showMascot ? (
-      <Box flexGrow={docked ? 1 : 0} flexShrink={0} flexDirection="column" justifyContent="center" width={W}>
-        <Box justifyContent="center" width={W}>
-          {motion ? (
-            <els.Client
-              key="clawd"
-              module="./clawd.tsx"
-              width={9}
-              height={3}
-              props={{ mode: running.length > 0 ? 'agents' : m.isRunning ? 'main' : 'rest', poses: CLAWD, body: CLAWD_COLORS.body, eyes: CLAWD_COLORS.eyes }}
-            />
-          ) : (
-            <Box key="clawd" flexDirection="column" width={9} flexShrink={0}>
-              {CLAWD.default.map(row => (
-                <Box>{row.map(clawdSpan)}</Box>
-              ))}
-            </Box>
-          )}
-        </Box>
+      <Box justifyContent="center" width={W}>
+        {motion ? (
+          <els.Client
+            key="clawd"
+            module="./clawd.tsx"
+            width={9}
+            height={3}
+            props={{ mode: running.length > 0 ? 'agents' : m.isRunning ? 'main' : 'rest', poses: CLAWD, body: CLAWD_COLORS.body, eyes: CLAWD_COLORS.eyes }}
+          />
+        ) : (
+          <Box key="clawd" flexDirection="column" width={9} flexShrink={0}>
+            {CLAWD.default.map(row => (
+              <Box>{row.map(clawdSpan)}</Box>
+            ))}
+          </Box>
+        )}
       </Box>
     ) : null
 
@@ -1138,7 +1132,8 @@ export const register: Register = (on, options) => {
     )
 
     return (
-      <Box flexDirection="column" width={W} minHeight={docked && e.props.scroll ? e.props.scroll.bodyRows : undefined}>
+      <Box flexDirection="column" width={W}>
+        {mascot}
         <Box justifyContent="center">
           <Text bold wrap="truncate">
             <Text color={C.main}>{modelName.toUpperCase()}</Text>
@@ -1158,7 +1153,6 @@ export const register: Register = (on, options) => {
         </Box>
         {body}
         {svgTimeline}
-        {mascot}
       </Box>
     )
   })

@@ -103,7 +103,7 @@
     },
     "mascot": {
       "title": "Mascot",
-      "description": "Clawd at the foot of the docked pane: he waves while agents run, blinks while the main loop works, and stands still otherwise",
+      "description": "Clawd at the top of the pane: he waves while agents run, blinks while the main loop works, and stands still otherwise",
       "type": "string",
       "options": [
         "on",

@@ -891,7 +891,7 @@ test('the agents title never runs past the frame: the hotkey hint gives way firs
 
 const clockOf = /^(\d\d:\d\d:\d\d|--:--:--)$/
 
-test('Clawd sits at the bottom, centred, in its own colours, and waves while agents run', async ($, on) => {
+test('Clawd stands at the top, centred, in its own colours, and waves while agents run', async ($, on) => {
   engine(on)
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'cl1' }))
   await $.turn.start({ text: 'go', turnId: 'CL1' })
@@ -899,10 +899,11 @@ test('Clawd sits at the bottom, centred, in its own colours, and waves while age
   const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   const clawd = await ui.find({ type: 'Client', key: 'clawd' })
   expect([clawd?.props.width, clawd?.props.height]).toEqual([9, 3])
-  // The last thing in the pane, centred across its full width.
-  const root = (await ui.drawn()) as { children?: { props?: { justifyContent?: string; width?: number }; children?: { props?: { key?: string } }[] }[] }
-  const last = (root.children ?? []).filter(Boolean).at(-1)
-  expect([last?.props?.justifyContent, last?.props?.width]).toEqual(['center', 64])
+  // The first thing in the pane, centred across its full width; the header right under him.
+  const { first, second } = await topOf(ui)
+  expect([first?.props?.justifyContent, first?.props?.width]).toEqual(['center', 64])
+  expect(((first?.children ?? []).filter(Boolean) as Tree[])[0]?.props?.key).toBe('clawd')
+  expect(textOf(second)).toBe('— WORKS')
   const eyes = await ui.findAll({ in: 'clawd', text: '▛███▛█' })
   expect(eyes.some(t => t.props.color === '#D77757' && t.props.backgroundColor === '#000000')).toBe(true)
   expect(await ui.find({ in: 'clawd', text: /▝▝ {3}▝▝/ })).toBeDefined()
@@ -962,10 +963,15 @@ test('without Clawd the log keeps those rows', { options: { mascot: 'off' } }, a
   expect(await logLinesAt($, on, 36)).toBe(8)
 })
 
-// Docked, the pane's room is bodyRows whatever its tree: the tree's root asks for at least that
-// many rows, and Clawd stands in a column that takes the rows the panels leave and centres him in
-// them; with none left it is his own 3 rows, under the log. Inline the frame fits the tree.
+// Clawd heads the pane: the first row of the tree, docked or inline, and the tree asks for no more
+// rows than it draws (no floor, no column stretched to centre him).
 type Tree = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+
+const topOf = async (ui: { drawn: () => Promise<unknown> }) => {
+  const root = (await ui.drawn()) as Tree
+  const [first, second] = (root.children ?? []).filter(Boolean) as Tree[]
+  return { root, first, second }
+}
 
 const withAgents = async ($: Engine, on: On, agents: number) => {
   engine(on)
@@ -975,53 +981,55 @@ const withAgents = async ($: Engine, on: On, agents: number) => {
   for (let i = 1; i <= agents; i += 1) await $.agent.spawn(spawn('Explore', `job ${i}`))
 }
 
-const footAt = async ($: Engine, bodyRows: number, placement: 'dock' | 'inline' = 'dock') => {
-  const ui = await $.ui.mount({ ...pane(64), props: { ...pane(64).props, placement, scroll: { offset: 0, bodyRows } }, surface: 'terminal' })
-  const root = (await ui.drawn()) as Tree
-  const foot = ((root.children ?? []).filter(Boolean) as Tree[]).at(-1)
-  const row = ((foot?.children ?? []).filter(Boolean) as Tree[])[0]
-  const clawd = await ui.find({ type: 'Client', key: 'clawd' })
-  await ui.unmount()
-  return { root, foot, row, clawd }
-}
+const mountAt = ($: Engine, cols: number, bodyRows: number, placement: 'dock' | 'inline' = 'dock') =>
+  $.ui.mount({ ...pane(cols), props: { ...pane(cols).props, placement, scroll: { offset: 0, bodyRows } }, surface: 'terminal' })
 
-test('docked, the tree fills the pane and Clawd stands centred in the rows the panels leave', async ($, on) => {
-  await withAgents($, on, 1)
-  for (const bodyRows of [30, 70]) {
-    const { root, foot, row, clawd } = await footAt($, bodyRows)
-    expect(root.props?.minHeight).toBe(bodyRows) // a floor, not a height: a taller tree grows the root
-    expect(root.props?.height).toBeUndefined()
-    expect([foot?.props?.flexGrow, foot?.props?.flexDirection, foot?.props?.justifyContent]).toEqual([1, 'column', 'center'])
-    expect(foot?.props?.marginTop).toBeUndefined()
-    expect([row?.props?.justifyContent, row?.props?.width]).toEqual(['center', 64]) // centred across the pane
-    expect([clawd?.props.width, clawd?.props.height]).toEqual([9, 3]) // 3 rows, the last thing drawn
+test('docked, Clawd heads the pane above the header, at any height, and the tree takes only its own rows', async ($, on) => {
+  await withAgents($, on, 5)
+  for (const [cols, bodyRows] of [[40, 30], [64, 30], [64, 70], [120, 70]] as const) {
+    const ui = await mountAt($, cols, bodyRows)
+    const { root, first, second } = await topOf(ui)
+    expect([root.props?.minHeight, root.props?.height]).toEqual([undefined, undefined])
+    expect([first?.props?.justifyContent, first?.props?.width, first?.props?.flexGrow]).toEqual(['center', cols, undefined])
+    expect(((first?.children ?? []).filter(Boolean) as Tree[])[0]?.props?.key).toBe('clawd')
+    expect(textOf(second)).toBe('— WORKS')
+    // Nothing in the tree stretches to fill the pane.
+    expect(under(root).some(t => t.props.flexGrow !== undefined && t.props.flexGrow !== 0)).toBe(false)
+    await ui.unmount()
   }
 })
 
-test('docked with 8 agents in lanes, the same: no estimate of the rows above', async ($, on) => {
-  await withAgents($, on, 8)
-  const { root, foot } = await footAt($, 40)
-  expect(root.props?.minHeight).toBe(40)
-  expect([foot?.props?.flexGrow, foot?.props?.justifyContent]).toEqual([1, 'center'])
-})
-
-test('inline, the frame fits the tree: no floor, and Clawd stays under the log', { options: { layout: 'compact' } }, async ($, on) => {
+test('inline (compact), Clawd heads the pane the same way', { options: { layout: 'compact' } }, async ($, on) => {
   await withAgents($, on, 1)
-  const { root, foot, row, clawd } = await footAt($, 70, 'inline')
-  expect(clawd).toBeDefined()
+  const ui = await mountAt($, 64, 70, 'inline')
+  const { root, first } = await topOf(ui)
   expect(root.props?.minHeight).toBeUndefined()
-  expect([foot?.props?.flexGrow, foot?.props?.marginTop]).toEqual([0, undefined])
-  expect([row?.props?.justifyContent, row?.props?.width]).toEqual(['center', 64])
+  expect([first?.props?.justifyContent, first?.props?.width]).toEqual(['center', 64])
+  expect(await ui.find({ type: 'Client', key: 'clawd' })).toBeDefined()
+  await ui.unmount()
 })
 
-test('the mini summary and mascot: off draw no Clawd and no column for him', { options: { mascot: 'off' } }, async ($, on) => {
+test('below 40 columns there is no Clawd; from 40 he stands', async ($, on) => {
   await withAgents($, on, 1)
-  const { root, foot, clawd } = await footAt($, 70)
-  expect(clawd).toBeUndefined()
-  expect(foot?.props?.flexGrow).toBeUndefined()
-  expect(root.props?.minHeight).toBe(70)
-  const mini = await footAt($, 70, 'inline') // layout auto, inline: the mini summary
-  expect([mini.clawd, mini.root.props?.minHeight]).toEqual([undefined, undefined])
+  for (const [cols, shown] of [[39, false], [40, true]] as const) {
+    const ui = await mountAt($, cols, 70)
+    expect((await ui.find({ key: 'clawd' })) !== undefined).toBe(shown)
+    expect(textOf((await topOf(ui)).first) === '— WORKS').toBe(!shown) // without him, the header leads
+    await ui.unmount()
+  }
+})
+
+test('the mini summary and mascot: off draw no Clawd: the header leads', { options: { mascot: 'off' } }, async ($, on) => {
+  await withAgents($, on, 1)
+  const docked = await mountAt($, 64, 70)
+  expect(await docked.find({ key: 'clawd' })).toBeUndefined()
+  const { root, first } = await topOf(docked)
+  expect([root.props?.minHeight, textOf(first)]).toEqual([undefined, '— WORKS'])
+  await docked.unmount()
+  const mini = await mountAt($, 64, 70, 'inline') // layout auto, inline: the mini summary
+  expect(await mini.find({ key: 'clawd' })).toBeUndefined()
+  expect((await topOf(mini)).root.props?.minHeight).toBeUndefined()
+  await mini.unmount()
 })
 
 test('VS Code and mobile draw no Client: the trunk and the clocks are drawn still there, motion on', async ($, on) => {
