@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0
+
+- A card has 5 rows; the trunk runs 7 rows beside each.
+- A review agent's verdict at the right end of its type and model row: `BLOQUANT` in red and bold, `MINEUR` in amber, `OK` in green, read from its whole final report (the word after "verdict", else the first `BLOQUANT` or `MINEUR` in capitals that is not negated, else an `OK` in bold), with a log line. Only agents whose task matches the new `verdictPattern` option get one (default `v[ée]rif|verify|review|check|audit`).
+- Messages between agents: `session.send` and `session.receive`, watch only. A fifth row counts the messages a card received and sent (`✉ 2 in · 1 out`, or `✉ —`); for 2.5 s after one its border turns amber. The log says who wrote to whom with the message's start, credentials masked (`main → <task> · « … »`). A send and its delivery are matched in order. A task notification marks its agent's card and counts as no message.
+- A resumed agent runs again: a message delivered to an ended card, or a new step of its own, sets it running; its next `turn.complete` ends it.
+- A context gauge on the third row: `ctx ▰▰▰▱▱▱▱▱ 38% · out 3k · 7 steps`, against the window the main loop was measured on for that model, `~` when it is inferred (another model, or the same under another variant), amber from 70 %, red past 90 %; narrower, the gauge takes 4 cells, then none. With no measurement yet, `ctx 12k` as before.
+- An agent's own compactions are counted on its card (`⟲N`) and logged with the sizes before and after.
+- 64 tests.
+
 ## 0.6.0
 
 - The agents section is a list: one card per agent, one under the other, every card kept (the latest 24) at the frame's full inner width, each sub-agent right after its parent. Swimlanes and their time axis, `+N earlier`, the cards side by side and the fan-out and merge rails are gone; the pane scrolls when the list is long.

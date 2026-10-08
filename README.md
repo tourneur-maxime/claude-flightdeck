@@ -62,10 +62,10 @@ https://github.com/user-attachments/assets/9ad0fcc3-c81c-427a-a743-f7b6c49f5885
 | **main** | model, effort, permission mode, request count; a context gauge with compactions (⟲); the first two rate-limit windows when your plan reports them, and the session's cost under `cost: on` | `turn.step`, `session.measure`, `session.compact`, `$.session.usage()` |
 | **architect** | consults on a timeline, whether one is running, how long the last took; optionally the moment of each consult; the first line of a subagent architect's advice | a spawn of a matching agent type, or a matching server tool in the assistant's rows |
 | **gate** | one cell per permission check: green allowed without asking, blue decided by the auto-mode classifier or you and then run, amber pending, red ✗ denied, dim if made inside a subagent. Totals, and a drill-down per tool family with credentials masked | `tool.check`, settled by the `tool.call` around it |
-| **agents** | a card per agent, one under the other, every one kept (the latest 24): the task; its type and model (`opus`, `sonnet`, `haiku`, or the model's name); live context and output tokens and steps; its state with a running clock, `max_tokens` in red. The cards hang off one trunk that starts under the header, a branch (`├─`, the last `└─`) on each card's top row. Sub-agents sit right under the agent that spawned them, at any depth: one level further along the trunk, `↳ parent` beside the model when it fits, the parent in the expanded card | `agent.spawn` (with its `parentAgentId`), `turn.step`, `tool.call`, `turn.complete` |
+| **agents** | a card per agent, one under the other, every one kept (the latest 24), 5 rows each: the task; its type and model (`opus`, `sonnet`, `haiku`, or the model's name), with a review agent's verdict at the right end (`BLOQUANT` in red, `MINEUR` in amber, `OK` in green); a gauge of its context against its window (`ctx ▰▰▰▱▱▱▱▱ 38%`, `~` when the window is inferred, amber from 70 %, red past 90 %), output, steps and its own compactions (⟲); its state with a running clock, `max_tokens` in red; the messages it received and sent (`✉ 2 in · 1 out`), its border flashing amber for 2.5 s after one. An ended agent that a message resumes runs again. The cards hang off one trunk that starts under the header, a branch (`├─`, the last `└─`) on each card's top row. Sub-agents sit right under the agent that spawned them, at any depth: one level further along the trunk, `↳ parent` beside the model when it fits, the parent in the expanded card | `agent.spawn` (with its `parentAgentId`), `turn.step`, `tool.call`, `turn.complete`, `session.send`, `session.receive`, `session.compact`, `session.measure` |
 | **loops** | model loops that match no card: workflow agents, compactions, memory forks | `turn.step` ids no card claims |
 | **receipt** | the running turn, or the last one: duration, agents, edits, errors, and the cost added under `cost: on` | `turn.start`, `turn.complete` |
-| **log** | prompts, spawns, completions, consults, edits, errors and denials; filtered to one agent while you view its transcript | all of the above |
+| **log** | prompts, spawns, completions, verdicts, messages between agents (`main → <task> · « … »`, in amber), compactions, consults, edits, errors and denials; filtered to one agent while you view its transcript | all of the above |
 
 Connectors animate only while work flows: a turn is running, an agent is running, or a consult is open. On the agents' trunk a comet runs down to each running agent's card and out along its branch; an ended agent's branch stays dim, and so does its card's border. Panels with nothing to show take no room, so a session without subagents shows just the main box and the log.
 
@@ -106,17 +106,24 @@ Flightdeck only watches. Every hook passes its event on unchanged: it never deni
 | every tool call's name and input, and whether it failed | `tool.call` |
 | every permission verdict | `tool.check` |
 | subagent spawns, their model requests and token usage, and their final answers | `agent.spawn`, `turn.step`, `turn.complete` |
+| messages between the main loop and agents, or between agents: who to whom, and their first 80 cells, credentials masked | `session.send`, `session.receive` |
+| compactions, the main loop's and each agent's, with the sizes before and after | `session.compact` |
 | your prompts' first 70 characters, for the log | `turn.start` |
 | context, cost and rate-limit readings | `session.measure`, `$.session.usage()` |
 | advisor tool calls in the assistant's responses (their content is encrypted) | `session.append` |
 
-What it keeps: short summaries (a tool name plus a path or command, with credentials masked) in session state, which ends with the session. It makes **no** network requests, runs no processes, reads and writes no files, stores nothing across sessions, and calls no model. `claude plugin validate .` prints exactly what it hooks and calls.
+What it keeps: short summaries (a tool name plus a path or command, the start of a message, with credentials masked) in session state, which ends with the session. It makes **no** network requests, runs no processes, reads and writes no files, stores nothing across sessions, and calls no model. `claude plugin validate .` prints exactly what it hooks and calls.
 
 ## What is inferred, not measured
 
 - **Architect moments.** "Before a plan" means no edits yet this turn, "error repeats" means 2+ main-loop errors in a row, "before done" means edits were made. They are labelled `(inferred)`; turn them off with `moments: false`.
 - **Server-side advice is encrypted.** For a server tool such as Claude Code's `advisor`, the pane counts and times the consult but cannot show what it said.
 - **Per-agent context is the latest request's whole input** (uncached + cache read + cache write). It is labelled `ctx`, not cost: the API has no per-agent cost.
+- **An agent's context window.** Only the main loop's window is measured. An agent on the very model the main loop was measured on gets that window; on another model, or the same model under another variant (`[1m]` or not), its gauge uses the main loop's window and its percentage is marked `~`. Before any measurement the card shows `ctx 12k` with no gauge.
+- **Verdicts are a reading of the text.** For an agent whose task matches `verdictPattern`, the badge is the word after "verdict" in its final report, else the first `BLOQUANT` or `MINEUR` in capitals that is not negated, else an `OK` in bold. A report that words its verdict otherwise shows none.
+- **Messages are matched in order.** A send and its delivery share no id: a delivery completes the latest send to that recipient, else the latest whose recipient could not be resolved, else the latest. A recipient is resolved by agent id, by the name the agent list gives, or by the one card spawned under that name.
+- **A resumed agent.** No event says an ended agent was resumed: a message delivered to it, or a new model request of its own, sets its card running again.
+- **The flash** ends with a redraw 2.5 s after the message; a surface that does not redraw then shows it until its next drawing.
 - **Other loops** can't tell a workflow agent from a compaction fork; both are model loops no card claims.
 - **A background agent's first step** can arrive before its card exists, so its usage may show one step late.
 - **Top-level placement in the agent tree.** Who spawned whom is measured (`parentAgentId`). But an agent whose parent has no card among those drawn (an architect, or an agent dropped from the list or not shown) is drawn at the top level, beside the main loop's own agents. Its expanded card still names the real parent: the architect, or `agent` when no card is left. Beside the cards, the trunk column is at most 6 cells wide. Counting the main loop as level 0, the agents it spawned are at level 1, their children at level 2 and theirs at level 3, each one level further along the trunk. An agent deeper than level 3 is drawn at level 3, keeping its own branch (for instance `│ │ └─`) on that level's line, with the levels between omitted; its expanded card names its real parent.
@@ -129,6 +136,7 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 | --- | --- | --- |
 | `architectPattern` | `advisor\|architect` | case-insensitive regex for agent types and server tools that count as the architect |
 | `matchDescriptions` | `false` | also match agent descriptions, not just type names |
+| `verdictPattern` | `v[ée]rif\|verify\|review\|check\|audit` | case-insensitive regex for the agent tasks (their description) whose final report carries a verdict shown on the card |
 | `architectLabel` | `ARCHITECT` | the architect's name in the pane |
 | `gateLabel` | `GATE` | the permission panel's name |
 | `panels` | `main,architect,gate,agents,loops,receipt,log` | which panels show, in order |
@@ -162,7 +170,7 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 | [`hooks/core.ts`](hooks/core.ts) | every reducer, formatter and layout rule as pure functions, so behaviour is testable directly |
 | [`hooks/rail.tsx`](hooks/rail.tsx), [`hooks/spine.tsx`](hooks/spine.tsx), [`hooks/elapsed.tsx`](hooks/elapsed.tsx), [`hooks/clawd.tsx`](hooks/clawd.tsx) | surface modules: animated connectors, the cards' trunk, live clocks and Clawd, each redrawing only itself on the surface's own frame clock |
 | [`types/index.d.ts`](types/index.d.ts) | the state contract |
-| [`tests/`](tests) | 54 tests: pure behaviour, plus drawings mounted on every surface at 40–120 columns |
+| [`tests/`](tests) | 64 tests: pure behaviour, plus drawings mounted on every surface at 40–120 columns |
 
 State lives in `$.state` atoms. Every read is merged over defaults, so a missing or older field never breaks the pane; an update that changes the state's shape may still reset its counters once. New to mods? Start with [Claude Code mods](https://claude.com/blog/claude-code-mods) and [Getting started with Claude Code mods](https://claude.dev/blog/getting-started-with-claude-code-mods/).
 
