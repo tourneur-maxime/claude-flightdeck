@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- The agents section is a list: one card per agent, one under the other, every card kept (the latest 24) at the frame's full inner width, each sub-agent right after its parent. Swimlanes and their time axis, `+N earlier`, the cards side by side and the fan-out and merge rails are gone; the pane scrolls when the list is long.
+- A card has 4 rows: the task (hotkeys `1` to `9`, the cards after the ninth expand by a click); its type and model, the model always shown and in short (`opus`, `sonnet`, `haiku`, or the model's name), with `↳ parent` beside it for a sub-agent when it fits; context, output and steps; its state (`◐ running`, `✓ done`, `✗ failed`, `■ stopped`, `max_tokens` in red) with its clock. The expanded card is unchanged.
+- The trunk runs down the left of the cards, 6 rows beside each: a branch on each card's top row, and a `┬` where a parent's children hang, their line running down beside the parent's card. The comet still runs down it and out along each running agent's branch.
+- Clawd stands at the top of the pane, centred above the model line, instead of at its foot; the docked pane no longer stretches to its full height to centre him.
+- The `maxCards` option is gone: with a list, there is nothing to cap side by side. A value left in settings is ignored.
+- The desktop's SVG time axis draws a bar for every card, in the list's order.
+- 52 tests.
+
 ## 0.5.3
 
 - Clawd's centring no longer estimates the rows above him, an estimate that ran short (rate limits, connectors, cards, the wide layout) and made the pane overflow at some heights. Docked, the pane's tree now asks for at least the pane's rows, and Clawd stands in a column that takes whatever rows the panels and the log leave and centres him in them; with none left it is his own 3 rows, right under the log, and nothing is pushed or cut. Inline, the frame still fits the tree and he stays under the log. The log's own rows are unchanged.
