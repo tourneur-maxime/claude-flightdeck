@@ -66,6 +66,8 @@ export type AgentCard = {
   received: number
   /** When it last sent or received one; the card's border flashes for a moment after. */
   lastMessageAt: number | null
+  /** Which way that message went: `out` to it (from main or another agent), `in` from it. */
+  lastMessageDir: 'in' | 'out' | null
   /** The main loop was told it finished (a task notification naming it). */
   notified: boolean
   /** Times its own transcript was compacted. */

@@ -1,6 +1,6 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
-import type { Engine } from 'claude-code/testing'
+import type { Engine, Mounted } from 'claude-code/testing'
 
 import {
   DEFAULT_ARCHITECT,
@@ -15,6 +15,8 @@ import {
   cardKind,
   cardMail,
   cardSpine,
+  cardPulse,
+  PULSE_MS,
   cardStats,
   cardStatsRow,
   cellWidth,
@@ -65,7 +67,7 @@ import {
   verdictOf,
   windowFor,
 } from '../hooks/core'
-import type { Check } from '../types'
+import type { AgentCard, Check } from '../types'
 
 // ---------------------------------------------------------------- pure behaviour
 
@@ -806,8 +808,7 @@ test('a lane per agent, in the tree order, each as wide as the frame leaves besi
     const spine = await ui.find({ type: 'Client', key: 'spine' })
     const props = spine?.props.props as SpineProps
     expect([spine?.props.width, spine?.props.height]).toEqual([4, 5]) // a row a lane
-    expect(props.rows.map(r => r.prefix)).toEqual(['├─┬─', '│ └─', '├───', '├───', '└───'])
-    expect(props.rows.map(r => r.active)).toEqual([true, true, false, false, false])
+    expect(props.rows).toEqual(['├─┬─', '│ └─', '├───', '├───', '└───'])
     for (const id of order) {
       const lane = await ui.find({ key: `lane-${id}` })
       expect(Number(lane?.props.width) + Number(spine?.props.width)).toBe(iw) // the frame's inner width, beside the trunk
@@ -873,7 +874,7 @@ test("the lanes draw the spawn tree: a sub-agent under its parent, any depth, it
     // One trunk from the header: every lane branches off it, sub-agents off their parent's line.
     const spine = await ui.find({ type: 'Client', key: 'spine' })
     const rows = (spine?.props.props as SpineProps).rows
-    expect(rows.map(r => r.prefix)).toEqual(['├─┬───', '│ └─┬─', '│   └─', '└─────'])
+    expect(rows).toEqual(['├─┬───', '│ └─┬─', '│   └─', '└─────'])
     expect(await ui.find({ in: 'spine', text: /└─/ })).toBeDefined()
     // Parent first, then its line of descent, then the next top-level agent.
     const titles = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => String(k).startsWith('lane-'))
@@ -919,48 +920,99 @@ test("a sub-agent's card names its parent beside its type and model when it fits
   }
 })
 
-type SpineProps = { rows: { prefix: string; active: boolean; flow: boolean[] }[]; color: string; dim: string }
+type SpineProps = { rows: string[]; pulses: { dir: 'in' | 'out'; until: number; flow: boolean[][] }[]; now: number; color: string; inColor: string; dim: string }
 
-test('every lane hangs off one trunk from the header; a comet runs down it only to the lane still running', async ($, on) => {
-  engine(on)
+test("an exchange runs on a card's way for PULSE_MS: its brief out, its report and its messages back in; a time of 0 none", () => {
+  const card = normalizeCard({ id: 'x', spawnedAt: 1_000 })
+  expect(cardPulse(card, 1_000)).toEqual({ dir: 'out', until: 1_000 + PULSE_MS })
+  expect(cardPulse(card, 1_000 + PULSE_MS - 1)?.dir).toBe('out')
+  expect(cardPulse(card, 1_000 + PULSE_MS)).toBeNull()
+  expect(cardPulse(card, 999)).toBeNull() // not yet
+  expect(cardPulse(normalizeCard({ id: 'x', spawnedAt: 0 }), 100)).toBeNull() // unknown
+  // The latest exchange wins: its report after its brief.
+  expect(cardPulse({ ...card, endedAt: 2_000 }, 2_500)).toEqual({ dir: 'in', until: 2_000 + PULSE_MS })
+  // A message to a card runs out to it; one from it, back in.
+  const [to, from] = noteMessage([{ ...card, id: 'to' }, { ...card, id: 'from' }], { from: 'from', to: 'to', at: 5_000 })
+  expect([to?.lastMessageDir, from?.lastMessageDir]).toEqual(['out', 'in'])
+  expect([cardPulse(to as AgentCard, 5_100)?.dir, cardPulse(from as AgentCard, 5_100)?.dir]).toEqual(['out', 'in'])
+  expect(noteMessage([{ ...card, id: 'to' }], { from: null, to: 'to', at: 5_000 })[0]?.lastMessageDir).toBe('out') // from main
+  // A card saved before the direction was kept: none; a message without one counts as out.
+  expect(normalizeCard({ id: 'x', lastMessageDir: 'sideways' }).lastMessageDir).toBeNull()
+  expect(cardPulse({ ...card, spawnedAt: 0, lastMessageAt: 7_000, lastMessageDir: null }, 7_000)?.dir).toBe('out')
+})
+
+test('every lane hangs off one trunk; it rests dim, an exchange runs on its agent\'s way: a brief out in its colour, a report back in amber', async ($, on) => {
+  const clock = engine(on, 10_000)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `t${++n}` }))
   await $.turn.start({ text: 'go', turnId: 'S1' })
   for (const d of ['alpha', 'beta', 'gamma', 'delta']) await $.agent.spawn(spawn('Explore', `task ${d}`))
-  for (const id of ['t1', 't3', 't4']) await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 'S1', agentId: id, reason: 'answer' })
+  // Comets per colour and direction over 12 frames.
+  const watch = async (ui: Mounted<'terminal', 'Pane'>) => {
+    const seen = { out: 0, in: 0, dots: 0 }
+    for (let step = 0; step < 12; step += 1) {
+      await ui.advance(130)
+      const texts = await ui.findAll({ in: 'spine', type: 'Text' })
+      seen.dots += texts.filter(t => /[●•]/.test(t.text)).length
+      seen.out += texts.filter(t => /[━┃]/.test(t.text) && t.props.color === 'suggestion' && t.props.bold === true).length
+      seen.in += texts.filter(t => /[━┃]/.test(t.text) && t.props.color === 'warning' && t.props.bold === true).length
+    }
+    return seen
+  }
+  const atRest = async (ui: Mounted<'terminal', 'Pane'>) => (await ui.findAll({ in: 'spine', type: 'Text' })).every(t => t.props.color === 'inactive')
+  // Just spawned: each brief runs out to its agent, in the agents' colour, down to its own branch.
   for (const cols of [40, 64, 120]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
     const spine = await ui.find({ type: 'Client', key: 'spine' })
-    expect(spine).toBeDefined()
     const props = spine?.props.props as SpineProps
-    // A row a lane, every one closed.
-    expect(props.rows.map(r => r.prefix)).toEqual(['├─', '├─', '├─', '└─'])
-    expect(props.rows.map(r => r.active)).toEqual([false, true, false, false])
+    expect(props.rows).toEqual(['├─', '├─', '├─', '└─'])
     expect([spine?.props.width, spine?.props.height]).toEqual([2, 4])
+    expect([props.now, props.color, props.inColor, props.dim]).toEqual([10_000, 'suggestion', 'warning', 'inactive'])
+    expect(props.pulses.map(p => [p.dir, p.until])).toEqual(Array.from({ length: 4 }, () => ['out', 10_000 + PULSE_MS]))
+    expect(lit(props.pulses[1]?.flow.map(flow => ({ flow })) ?? [])).toEqual(['#.', '##', '..', '..']) // down past t1, out to t2
+    expect(await watch(ui)).toEqual(expect.objectContaining({ dots: 0, in: 0 }))
     // A title Button a lane, in the lanes' order, none with a hotkey.
     const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('lane-'))
-    expect(buttons.map(b => [b.key, b.props.hotkey])).toEqual([
-      ['lane-t1-title', undefined],
-      ['lane-t2-title', undefined],
-      ['lane-t3-title', undefined],
-      ['lane-t4-title', undefined],
-    ])
-    // A comet runs down the trunk to the running card's branch: a thick bold head on the wire
-    // (┃ down the trunk, ━ along the branch; ├ └ kept), a fading trail; no dots. The ended branches stay dim.
-    let heads = 0
-    let trails = 0
-    let outward = 0
-    for (let step = 0; step < 12; step += 1) {
-      await ui.advance(130)
-      const lit = await ui.findAll({ in: 'spine', type: 'Text' })
-      expect(lit.some(t => /[●•]/.test(t.text))).toBe(false)
-      heads += lit.filter(t => /[━┃]/.test(t.text) && t.props.color === 'suggestion' && t.props.bold === true).length
-      outward += lit.filter(t => /━/.test(t.text) && t.props.color === 'suggestion' && t.props.bold === true).length
-      trails += lit.filter(t => t.props.color === 'suggestion' && t.props.dimColor === true && t.props.bold !== true).length
+    expect(buttons.map(b => [b.key, b.props.hotkey])).toEqual(['t1', 't2', 't3', 't4'].map(id => [`lane-${id}-title`, undefined]))
+    await ui.unmount()
+  }
+  {
+    const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+    expect((await watch(ui)).out > 0).toBe(true)
+    // PULSE_MS on the module's own clock, with no new drawing: the trunk rests.
+    await ui.advance(PULSE_MS)
+    expect(await atRest(ui)).toBe(true)
+    await ui.unmount()
+  }
+  // Later, t2 still running: nothing runs on the trunk.
+  await clock.advance(PULSE_MS)
+  {
+    const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+    expect((ui && ((await ui.find({ type: 'Client', key: 'spine' }))?.props.props as SpineProps).pulses)).toEqual([])
+    expect(await watch(ui)).toEqual({ out: 0, in: 0, dots: 0 })
+    expect(await atRest(ui)).toBe(true)
+    await ui.unmount()
+  }
+  // t3 reports: its report runs back up its way in amber, and only on its way.
+  await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 'S1', agentId: 't3', reason: 'answer' })
+  {
+    const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+    const props = (await ui.find({ type: 'Client', key: 'spine' }))?.props.props as SpineProps
+    expect(props.pulses.map(p => p.dir)).toEqual(['in'])
+    expect(lit(props.pulses[0]?.flow.map(flow => ({ flow })) ?? [])).toEqual(['#.', '#.', '##', '..'])
+    const seen = await watch(ui)
+    expect([seen.in > 0, seen.out]).toEqual([true, 0])
+    // With t1's lane open, t3's way runs 10 rows down the trunk: its comets' heads climb it, a row a frame.
+    await openLane(ui, 't1')
+    const heads = async () => {
+      const rows = (await ui.findAll({ in: 'spine', type: 'Box' })).filter(b => (b.children ?? []).length > 0 && under(b).every(t => t.type === 'Text'))
+      return rows.flatMap((b, y) => (under(b)[0]?.props.bold === true && y < 10 ? [y] : []))
     }
-    expect([heads > 0, outward > 0, trails > 0]).toEqual([true, true, true])
-    const drawn = await ui.findAll({ in: 'spine', type: 'Text' })
-    expect(drawn.some(t => t.props.color === 'inactive' && /├─/.test(t.text))).toBe(true)
+    const before = await heads()
+    await ui.advance(130)
+    const after = await heads()
+    expect(before.length > 0).toBe(true)
+    expect(before.filter(y => y > 0).map(y => y - 1)).toEqual(after.filter(y => y < 9))
     await ui.unmount()
   }
 })
@@ -1032,7 +1084,7 @@ test('a lane pressed opens its card right under it, pressed again closes it; one
   await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 'LN1', agentId: 'ln1', reason: 'answer' })
   let ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   const cardsDrawn = async () => (await ui.findAll({ type: 'Box' })).map(b => String(b.key)).filter(k => /^agent-/.test(k))
-  const trunk = async () => ((await ui.find({ type: 'Client', key: 'spine' }))?.props.props as SpineProps).rows.map(r => r.prefix)
+  const trunk = async () => ((await ui.find({ type: 'Client', key: 'spine' }))?.props.props as SpineProps).rows
   const glyphOf = async (id: string) => textOf(await ui.find({ key: `lane-row-${id}` })).slice(0, 3)
   expect(await cardsDrawn()).toEqual([])
   expect(await trunk()).toEqual(['├─', '├─', '└─'])

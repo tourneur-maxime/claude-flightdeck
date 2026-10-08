@@ -24,6 +24,7 @@ import {
   cardKind,
   cardMail,
   cardSpine,
+  cardPulse,
   cardStatsRow,
   cardTitle,
   cellWidth,
@@ -1166,13 +1167,24 @@ export const register: Register = (on, options) => {
         now,
         barW,
       )
+      // An exchange between main and an agent runs along that agent's way for PULSE_MS: out to it
+      // in its colour, back in amber. The trunk rests dim between exchanges, running or not.
+      const pulses = tree.flatMap((row, i) => {
+        const p = cardPulse(row.card, now)
+        if (!p) return []
+        const way = cardSpine(
+          tree.map((r, k) => ({ depth: r.depth, active: k === i })),
+          heights,
+        )
+        return [{ ...p, flow: way.rows.map(r => r.flow) }]
+      })
       const trunk = motion ? (
         <els.Client
           key="spine"
           module="./spine.tsx"
           width={spine.width}
           height={spine.rows.length}
-          props={{ rows: spine.rows, color: C.agent, dim: C.dim }}
+          props={{ rows: spine.rows.map(r => r.prefix), pulses, now, color: C.agent, inColor: C.amber, dim: C.dim }}
         />
       ) : (
         <Box flexDirection="column" width={spine.width} flexShrink={0}>

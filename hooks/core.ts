@@ -87,6 +87,7 @@ export const normalizeCard = (stored: unknown): AgentCard => {
       sent: 0,
       received: 0,
       lastMessageAt: null,
+      lastMessageDir: null,
       notified: false,
       compactions: 0,
     },
@@ -101,6 +102,7 @@ export const normalizeCard = (stored: unknown): AgentCard => {
     sent: count(c.sent),
     received: count(c.received),
     lastMessageAt: typeof c.lastMessageAt === 'number' ? c.lastMessageAt : null,
+    lastMessageDir: c.lastMessageDir === 'in' || c.lastMessageDir === 'out' ? c.lastMessageDir : null,
     notified: c.notified === true,
     compactions: count(c.compactions),
   }
@@ -551,8 +553,8 @@ export const taskIdOf = (text: string) => /<task-id>\s*([^<\s]+)\s*<\/task-id>/.
  */
 export const noteMessage = (cards: AgentCard[], m: { from: string | null; to: string; at: number }): AgentCard[] =>
   cards.map(c => {
-    if (c.id === m.to) return { ...resumeCard(c), received: c.received + 1, lastMessageAt: m.at }
-    if (c.id === m.from) return { ...c, sent: c.sent + 1, lastMessageAt: m.at }
+    if (c.id === m.to) return { ...resumeCard(c), received: c.received + 1, lastMessageAt: m.at, lastMessageDir: 'out' as const }
+    if (c.id === m.from) return { ...c, sent: c.sent + 1, lastMessageAt: m.at, lastMessageDir: 'in' as const }
     return c
   })
 
@@ -561,6 +563,31 @@ export const FLASH_MS = 2500
 
 export const isFlashing = (c: AgentCard, now: number) =>
   c.lastMessageAt !== null && now >= c.lastMessageAt && now - c.lastMessageAt < FLASH_MS
+
+/** How long an exchange runs along the trunk between main and a card. */
+export const PULSE_MS = 3000
+
+/** Which way an exchange runs on the trunk: `out` from main to the card, `in` back from it. */
+export type PulseDir = 'in' | 'out'
+
+/**
+ * The exchange still running on a card's way at `now`, the latest of: its brief (spawned, out),
+ * its report (ended, in), its last message (out to it, in from it); each for PULSE_MS. A time of
+ * 0 is unknown, one ahead of `now` not yet: neither runs.
+ */
+export const cardPulse = (c: AgentCard, now: number): { dir: PulseDir; until: number } | null => {
+  const events: [number | null, PulseDir][] = [
+    [c.spawnedAt, 'out'],
+    [c.endedAt, 'in'],
+    [c.lastMessageAt, c.lastMessageDir ?? 'out'],
+  ]
+  let latest: { at: number; dir: PulseDir } | null = null
+  for (const [at, dir] of events) {
+    if (at === null || at <= 0 || at > now || now - at >= PULSE_MS) continue
+    if (!latest || at >= latest.at) latest = { at, dir }
+  }
+  return latest ? { dir: latest.dir, until: latest.at + PULSE_MS } : null
+}
 
 /** A card's fifth row: the messages it received and sent, `✉ 2 in · 1 out`, or `✉ —` before any. */
 export const cardMail = (c: AgentCard) => (c.sent + c.received > 0 ? `✉ ${c.received} in · ${c.sent} out` : '✉ —')

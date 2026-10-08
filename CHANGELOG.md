@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0
+
+- The agents' trunk shows the exchanges between main and each agent, not that it runs. It rests dim; for 3 s after an exchange, comets run along that agent's way only: down the trunk and out along its branch in the agents' colour for its brief (spawned) or a message to it, back up from its branch in amber for its report (ended) or a message it sent. The ◐ beside the lane still says it runs.
+- A card remembers which way its last message went (`lastMessageDir`); a card saved before reads as none.
+- 94 tests.
+
 ## 0.9.2
 
 - The comets on the links (main to the architect, to the gate, to the agents) stay 24 cells apart. They looped over the rail's width plus 24, so on a rail whose width is not a multiple of 24 the gap between the last comet and the first closed (to 16 cells on a 58-cell rail) each time one came back in at the left. A cell's level now comes from its own distance behind the nearest head, as on the agents' trunk.
