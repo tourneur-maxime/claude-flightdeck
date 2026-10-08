@@ -422,8 +422,8 @@ export const stepLoop = (loops: Loop[], id: string, at: number): Loop[] => {
 export const LOOP_ACTIVE_MS = 15_000
 export const isLoopActive = (l: Loop, now: number) => !l.isDone && now - l.lastAt < LOOP_ACTIVE_MS
 
-/** Swimlane geometry: each agent's bar on one shared axis from the first spawn to now. */
-export const lanes = (cards: AgentCard[], now: number, width: number) => {
+/** The desktop time axis: each agent's bar on one shared axis from the first spawn to now. */
+export const timeBars = (cards: AgentCard[], now: number, width: number) => {
   const start = Math.min(...cards.map(c => c.spawnedAt).filter(n => n > 0), now)
   const span = Math.max(1, now - start)
   return cards.map(c => {
@@ -434,6 +434,15 @@ export const lanes = (cards: AgentCard[], now: number, width: number) => {
 }
 
 // ---------------------------------------------------------------- layout
+
+/** Rows one agent card takes in the list: its two borders, the title, type and model, tokens and status. */
+export const CARD_ROWS = 6
+
+/** Cards kept in state, the oldest dropped past it; the list draws every one. */
+export const MAX_CARDS = 24
+
+/** Rows the agents section takes: its frame and title, then each card; nothing without a card. */
+export const agentsRows = (cards: number) => (cards > 0 ? 3 + CARD_ROWS * Math.min(cards, MAX_CARDS) : 0)
 
 /** How many log lines fit: what the other panels leave, never fewer than 4 nor more than 8. */
 export const logRows = (bodyRows: number, used: number) => Math.max(4, Math.min(8, bodyRows - used - 3))
@@ -453,6 +462,23 @@ export const fitLegend = <T extends { label: string }>(items: T[], width: number
 
 /** A card's title row: the task in the agent's own words, the type only when there is none. */
 export const cardTitle = (c: AgentCard) => c.description || c.type
+
+/** A model as a card names it: its family (`opus`, `sonnet`, `haiku`), or any other model as `prettyModel` does. */
+export const shortModel = (id: string) => /(opus|sonnet|haiku)/i.exec(id)?.[1]?.toLowerCase() ?? prettyModel(id)
+
+/**
+ * A card's second row: its type and model, always; then, for a sub-agent, `↳` and its parent's
+ * title when at least 6 cells of it fit in `width`. Otherwise the parent waits for the expanded card.
+ */
+export const cardKind = (c: AgentCard, parent: AgentCard | null, width: number) => {
+  const base = `${c.type} · ${shortModel(c.model)}`
+  const room = width - base.length - 5
+  return parent && room >= 6 ? `${base} · ↳ ${shorten(cardTitle(parent), room)}` : base
+}
+
+/** A card's third row: its context, its output and its steps, or `starting…` before its first step. */
+export const cardStats = (c: AgentCard) =>
+  c.steps > 0 ? `ctx ${kTokens(c.ctx)} · out ${kTokens(c.out)} · ${plural(c.steps, 'step')}` : 'starting…'
 
 export type TreeRow = { card: AgentCard; depth: number; prefix: string; parent: AgentCard | null }
 
@@ -540,6 +566,65 @@ export const spineRows = (input: { prefix: string; active: boolean }[]): { rows:
     }
   })
   return { rows: cut.map((p, i) => ({ prefix: p.padEnd(width), active: input[i]?.active ?? false, flow: flow[i] ?? [] })), width }
+}
+
+/** Levels the cards' trunk draws apart: 0 (the main loop's agents), 1 and 2; deeper ones share level 2's column. */
+const SPINE_LEVELS = (SPINE_MAX - 2) / 2
+
+/**
+ * The cards' trunk column: `height` rows beside each card, in the tree's order, all one width.
+ * A card's branch (`├─`, the last one at its level `└─`) is on its top row and runs on in `─` to
+ * the card; a card with children drops a `┬` there, and their line runs down beside it. A line
+ * goes on down while a later card hangs at its column before a shallower one. Past level 2, cards
+ * are drawn at level 2 with their own branch. `flow` marks the cells on the way from the top to
+ * each running card: up its own line, through each ancestor's `┬` and branch, to the trunk.
+ */
+export const cardSpine = (input: { depth: number; active: boolean }[], height = CARD_ROWS): { rows: SpineRow[]; width: number } => {
+  const lv = input.map(r => Math.max(0, Math.min(SPINE_LEVELS, r.depth)))
+  const width = lv.length > 0 ? 2 * Math.max(...lv) + 2 : 0
+  const goesOn = lv.map((l, i) => {
+    for (const next of lv.slice(i + 1)) if (next <= l) return next === l
+    return false
+  })
+  // Which levels' lines are still open at the card being drawn: its ancestors' (the latest card at each level above).
+  const open: boolean[] = []
+  const lines: string[] = []
+  lv.forEach((l, i) => {
+    const on = goesOn[i] ?? false
+    const kids = l < SPINE_LEVELS && lv[i + 1] === l + 1
+    const lead = Array.from({ length: l }, (_, k) => (open[k] ? '│ ' : '  ')).join('')
+    lines.push(`${lead}${on ? '├' : '└'}─${kids ? '┬' : ''}`.padEnd(width, '─'))
+    const below = `${lead}${on ? '│' : ' '} ${kids ? '│' : ''}`.padEnd(width)
+    for (let k = 1; k < height; k += 1) lines.push(below)
+    open[l] = on
+  })
+  const cells = lines.map(p => Array.from(p))
+  const flow = cells.map(row => row.map(() => false))
+  const at = (r: number, x: number) => cells[r]?.[x] ?? ' '
+  const mark = (r: number, x: number) => {
+    const row = flow[r]
+    if (row && at(r, x) !== ' ') row[x] = true
+  }
+  input.forEach((r, i) => {
+    if (!r.active) return
+    const top = i * height
+    let x = 2 * (lv[i] ?? 0)
+    for (let c = x; c < width; c += 1) mark(top, c)
+    let row = top - 1
+    while (row >= 0 && x >= 0) {
+      const ch = at(row, x)
+      if (ch === '┬') {
+        // A parent's top row: across its branch to its own line, and up that.
+        mark(row, x)
+        mark(row, x - 1)
+        mark(row, x - 2)
+        x -= 2
+      } else if (ch === '│' || ch === '├') mark(row, x)
+      else break
+      row -= 1
+    }
+  })
+  return { rows: lines.map((p, k) => ({ prefix: p, active: input[Math.floor(k / Math.max(1, height))]?.active ?? false, flow: flow[k] ?? [] })), width }
 }
 
 // ---------------------------------------------------------------- Clawd

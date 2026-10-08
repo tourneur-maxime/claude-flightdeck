@@ -34,7 +34,7 @@ import {
   isAdvising,
   isLoopActive,
   kTokens,
-  lanes,
+  timeBars,
   limitLabel,
   listOf,
   logRows,
@@ -789,7 +789,7 @@ export const register: Register = (on, options) => {
         const tree = agentTree(cards.slice(-6))
         const shown = tree.map(row => row.card)
         const barW = Math.max(8, iw - 28)
-        const geo = lanes(shown, now, barW)
+        const geo = timeBars(shown, now, barW)
         const earlier = cards.length - shown.length
         const spine = spineRows([
           ...(earlier > 0 ? [{ prefix: '│', active: false }] : []),
@@ -1029,7 +1029,7 @@ export const register: Register = (on, options) => {
             const { Svg } = $.ui.resolve(e)
             const rowH = 18
             const pxW = 520
-            const geo = lanes(cards.slice(-10), now, 100)
+            const geo = timeBars(cards.slice(-10), now, 100)
             const rects = cards
               .slice(-10)
               .map((c, i) => {

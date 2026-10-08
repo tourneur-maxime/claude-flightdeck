@@ -8,13 +8,16 @@ import {
   DEFAULT_TURN,
   afterCall,
   agentTree,
+  agentsRows,
   applyStep,
+  cardKind,
+  cardSpine,
+  cardStats,
   consultTimeline,
   describeInput,
   endConsult,
   fitLegend,
   gateSummary,
-  lanes,
   limitLabel,
   logRows,
   momentOf,
@@ -22,20 +25,20 @@ import {
   parentLabel,
   normalizeGate,
   normalizeLog,
-  titleLines,
   parseConfig,
   prettyModel,
   promptLine,
+  shortModel,
   handbackOf,
   adviceLine,
   receiptOf,
   recordCheck,
   CLAWD,
-  spineRows,
   redact,
   settleCheck,
   trimRecent,
   startConsult,
+  timeBars,
 } from '../hooks/core'
 import type { Check } from '../types'
 
@@ -155,16 +158,18 @@ test('state saved under an older shape still reads', () => {
   expect(normalizeCard({ id: 'a', status: 'done' }).tools).toEqual([])
 })
 
-test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never wraps', () => {
+test('layout math: the desktop time bars share one axis, the log gets 4-8 rows, the legend never wraps', () => {
   const cards = [
     { ...normalizeCard({}), id: 'a', spawnedAt: 1000, endedAt: 1050 },
     { ...normalizeCard({}), id: 'b', spawnedAt: 1050, endedAt: null },
   ]
-  const [a, b] = lanes(cards, 1100, 20)
+  const [a, b] = timeBars(cards, 1100, 20)
   expect(a).toEqual({ id: 'a', before: 0, bar: 10, after: 10 })
   expect(b?.before).toBe(10)
   expect((b?.before ?? 0) + (b?.bar ?? 0) + (b?.after ?? 0)).toBe(20)
   expect([logRows(10, 40), logRows(50, 40), logRows(200, 40)]).toEqual([4, 7, 8])
+  // The agents section: its frame and title, then 6 rows a card, for the 24 cards kept at most.
+  expect([agentsRows(0), agentsRows(1), agentsRows(5), agentsRows(24), agentsRows(30)]).toEqual([0, 9, 33, 147, 147])
   expect(fitLegend([{ label: 'main' }, { label: 'agents' }, { label: 'architect' }], 20).map(x => x.label)).toEqual(['main', 'agents'])
   expect(limitLabel('five_hour')).toBe('5h')
   expect(prettyModel('claude-opus-5-5[1m]')).toBe('Opus 5.5 1M')
@@ -184,8 +189,6 @@ test('layout math: lanes share one axis, the log gets 4-8 rows, the legend never
   expect(adviceLine('')).toBe('')
   expect(promptLine('<agent-message from="a1492260715f3be7b"> [Subagent hand-back]')).toEqual({ who: 'engine', text: 'agent message from a1492260' })
   expect(receiptOf({ ...DEFAULT_TURN, costAtStart: 5 }, { durationMs: 1, agentsSince: 0, costNow: 5, reason: 'answer' }).costDelta).toBe(null)
-  expect(titleLines('Write tinyqueue test suite', 13, 16)).toEqual(['Write', 'tinyqueue test…'])
-  expect(titleLines('Short', 13, 16)).toEqual(['Short', ''])
   expect(receiptOf({ ...DEFAULT_TURN, costAtStart: 1, edits: 2 }, { durationMs: 1000, agentsSince: 3, costNow: 1.5, reason: 'answer' }).costDelta).toBe(0.5)
 })
 
@@ -221,34 +224,86 @@ test('an agent whose parent has no card (an architect, an evicted card) is drawn
   expect(loop.map(r => r.card.id).sort()).toEqual(['p', 'q', 's'])
 })
 
-test('the lanes trunk: one column of equal-width rows, cut to 6 cells, lit only on the way to a running agent', () => {
-  const { rows, width } = spineRows([
-    { prefix: '│', active: false }, // the "+N earlier" row: the trunk runs through it
-    { prefix: '├─', active: false },
-    { prefix: '│ └─', active: false },
-    { prefix: '└─', active: false },
-    { prefix: '  └─', active: true },
+const lit = (rows: { flow: boolean[] }[]) => rows.map(r => r.flow.map(f => (f ? '#' : '.')).join(''))
+
+test('the cards trunk: a branch on each card\'s top row, its lines down the card, lit only on the way to a running agent', () => {
+  // a, its children a1 (with a1x under it) and a2, then b; 2 rows a card to keep it short.
+  const { rows, width } = cardSpine(
+    [
+      { depth: 0, active: false },
+      { depth: 1, active: false },
+      { depth: 2, active: true },
+      { depth: 1, active: false },
+      { depth: 0, active: false },
+    ],
+    2,
+  )
+  expect(width).toBe(6)
+  // A parent's branch drops a ┬ to its children, whose line runs down the parent's card; a branch
+  // runs on in ─ to the card; a line stops under the last child (└─).
+  expect(rows.map(r => r.prefix)).toEqual([
+    '├─┬───',
+    '│ │   ',
+    '│ ├─┬─',
+    '│ │ │ ',
+    '│ │ └─',
+    '│ │   ',
+    '│ └───',
+    '│     ',
+    '└─────',
+    '      ',
   ])
-  expect(width).toBe(4)
-  expect(rows.map(r => r.prefix)).toEqual(['│   ', '├─  ', '│ └─', '└─  ', '  └─'])
-  // Down the trunk (column 0) to the parent's branch, then the running child's own branch.
-  const lit = rows.map(r => r.flow.map(f => (f ? '#' : '.')).join(''))
-  expect(lit).toEqual(['#...', '#...', '#...', '##..', '..##'])
+  expect(rows.map(r => r.active)).toEqual([false, false, false, false, true, true, false, false, false, false])
+  // From the trunk to a, down a's children line to a1, down a1's to a1x, out along a1x's branch.
+  expect(lit(rows)).toEqual(['###...', '..#...', '..###.', '....#.', '....##', '......', '......', '......', '......', '......'])
   // Nothing running: nothing lit.
-  expect(spineRows([{ prefix: '├─', active: false }, { prefix: '└─', active: false }]).rows.every(r => r.flow.every(f => !f))).toBe(true)
-  // The trunk to the parent, the parent's branch, then its own line in column 2; the trunk on to b stays dark.
-  const deep = spineRows([
-    { prefix: '├─', active: false },
-    { prefix: '│ ├─', active: false },
-    { prefix: '│ │ └─', active: false },
-    { prefix: '│ └─', active: true },
-    { prefix: '└─', active: false },
+  expect(cardSpine([{ depth: 0, active: false }, { depth: 0, active: false }]).rows.every(r => r.flow.every(f => !f))).toBe(true)
+})
+
+test('the cards trunk: 6 rows a card by default, the trunk alone for top-level cards, at most 6 cells wide', () => {
+  const flat = cardSpine([
+    { depth: 0, active: false },
+    { depth: 0, active: true },
+    { depth: 0, active: false },
   ])
-  expect(deep.rows.map(r => r.flow.map(f => (f ? '#' : '.')).join(''))).toEqual(['##....', '..#...', '..#...', '..##..', '......'])
-  // Past 6 cells the trunk and the agent's own branch are kept, the levels between dropped.
-  const cut = spineRows([{ prefix: '│ │ │ └─', active: false }])
-  expect([cut.width, cut.rows[0]?.prefix]).toEqual([6, '│ │ └─'])
-  expect(spineRows([]).width).toBe(0)
+  expect([flat.width, flat.rows.length]).toEqual([2, 18])
+  expect(flat.rows.map(r => r.prefix)).toEqual([...['├─', '│ ', '│ ', '│ ', '│ ', '│ '], ...['├─', '│ ', '│ ', '│ ', '│ ', '│ '], ...['└─', '  ', '  ', '  ', '  ', '  ']])
+  // Down the trunk past the first card, out to the second; the trunk on to the third stays dark.
+  expect(lit(flat.rows).slice(0, 13)).toEqual(['#.', '#.', '#.', '#.', '#.', '#.', '##', '..', '..', '..', '..', '..', '..'])
+  // Past level 2 a card shares the column of level 2, keeping its own branch: a cut level's line
+  // runs on while the next card is drawn at that level too.
+  const deep = cardSpine(
+    [
+      { depth: 0, active: false },
+      { depth: 1, active: false },
+      { depth: 2, active: false },
+      { depth: 3, active: true },
+    ],
+    1,
+  )
+  expect([deep.width, ...deep.rows.map(r => r.prefix)]).toEqual([6, '└─┬───', '  └─┬─', '    ├─', '    └─'])
+  expect(lit(deep.rows)).toEqual(['###...', '..###.', '....#.', '....##'])
+  expect(cardSpine([])).toEqual({ rows: [], width: 0 })
+})
+
+test("a card's rows: the model in short, the parent when it fits, the tokens and steps", () => {
+  expect(['claude-opus-5-5[1m]', 'us.anthropic.claude-sonnet-4-5-20250929-v1:0', 'claude-3-5-haiku-20241022', 'claude-fable-5-1', ''].map(shortModel)).toEqual([
+    'opus',
+    'sonnet',
+    'haiku',
+    'Fable 5.1',
+    '—',
+  ])
+  const parent = node('p', null, 'Implement the parser')
+  const child = { ...node('c', 'p', 'Map the call sites'), type: 'Explore', model: 'claude-sonnet-5-5' }
+  expect(cardKind(child, null, 40)).toBe('Explore · sonnet')
+  expect(cardKind(child, parent, 41)).toBe('Explore · sonnet · ↳ Implement the parser')
+  expect(cardKind(child, parent, 30)).toBe('Explore · sonnet · ↳ Implemen…')
+  expect(cardKind(child, parent, 26)).toBe('Explore · sonnet') // fewer than 6 cells left: the parent waits for the expanded card
+  expect(cardStats(child)).toBe('starting…')
+  const run = applyStep(child, { model: 'claude-sonnet-5-5', usage: { input_tokens: 12_000, output_tokens: 3_000 }, stopReason: 'tool_use' })
+  expect(cardStats(run)).toBe('ctx 12k · out 3k · 1 step')
+  expect(cardStats({ ...run, steps: 7 })).toBe('ctx 12k · out 3k · 7 steps')
 })
 
 test("Clawd's poses are the official glyphs: 3 rows of 9 cells, eyes and lids marked", () => {
