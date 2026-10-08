@@ -60,6 +60,7 @@ import {
   parseConfig,
   parentLabel,
   pickPending,
+  queuePending,
   prettyModel,
   promptLine,
   handbackOf,
@@ -249,6 +250,26 @@ async function outgoing($: EngineInterface, e: { to: string; text: string; agent
   return { from: e.agentId ?? 'main', to: resolveRecipient(e.to, cards, listed), text: messageExcerpt(e.text, 80), at: await $.clock.now() }
 }
 
+/** A compaction that ran: the main loop's in the usage, a subagent's on its card; both logged. */
+async function noteCompaction($: EngineInterface, e: { trigger: string; agentId?: string }, done: { skip?: string; tokensBefore?: number; tokensAfter?: number }) {
+  if (!e.agentId && e.trigger !== 'precompute') {
+    const now = await $.clock.now()
+    await update($, usage, x => {
+      const u = normalize(DEFAULT_USAGE, x)
+      return { ...u, compactions: u.compactions + 1, lastCompactAt: now }
+    })
+    await say($, 'main', `context compacted (${e.trigger})`)
+  } else if (e.agentId && e.trigger !== 'precompute' && done.skip === undefined) {
+    // A subagent's own transcript compacted: counted on its card.
+    const id = e.agentId
+    if ((await getCards($)).some(c => c.id === id)) {
+      await update($, agents, list => listOf<unknown>(list).map(normalizeCard).map(c => (c.id === id ? { ...c, compactions: c.compactions + 1 } : c)))
+      const sizes = done.tokensBefore !== undefined && done.tokensAfter !== undefined ? ` · ${kTokens(done.tokensBefore)}→${kTokens(done.tokensAfter)}` : ''
+      await say($, await whoIs($, id), `compacted (${e.trigger})${sizes}`, 'info', id)
+    }
+  }
+}
+
 /**
  * A delivery at session.receive: a task notification marks its agent's card; a message from the
  * main loop or an agent completes the send waiting for it, counts on both cards, resumes an ended
@@ -264,6 +285,8 @@ async function noteDelivery($: EngineInterface, cfg: Config, pending: PendingMes
   }
   // A message from the main loop or another agent; other deliveries (a relay, a trigger) are not.
   if (e.origin.kind !== 'coordinator' && e.origin.kind !== 'peer' && e.origin.kind !== 'peer-send-message') return
+  // Sends waiting longer than PENDING_MS (to another session, say) are dropped first.
+  pending.splice(0, pending.length, ...queuePending(pending, await $.clock.now()))
   const i = pickPending(pending, to)
   // A subagent's hand-back is its report, not a message: unless a send waits, it is not counted.
   if (i < 0 && handbackOf(e.text)) return
@@ -393,9 +416,6 @@ export const register: Register = (on, options) => {
         const x = normalize(DEFAULT_MAIN, m)
         return { ...x, model: e.model, effort: String(e.effort ?? x.effort), steps: x.steps + 1 }
       })
-      // A model with no window yet takes the last one measured; the next measurement corrects it.
-      const [w, u] = await Promise.all([getWindows($), getUsage($)])
-      if (u.window > 0 && w[e.model.trim().toLowerCase()] === undefined) await learnWindow($, u.window)
       return yield* next(e)
     }
     const result = yield* next(e)
@@ -428,21 +448,11 @@ export const register: Register = (on, options) => {
 
   on('session.compact', async ($, e, next) => {
     const done = await next(e)
-    if (!e.agentId && e.trigger !== 'precompute') {
-      const now = await $.clock.now()
-      await update($, usage, x => {
-        const u = normalize(DEFAULT_USAGE, x)
-        return { ...u, compactions: u.compactions + 1, lastCompactAt: now }
-      })
-      await say($, 'main', `context compacted (${e.trigger})`)
-    } else if (e.agentId && e.trigger !== 'precompute' && done.skip === undefined) {
-      // A subagent's own transcript compacted: counted on its card.
-      const id = e.agentId
-      if ((await getCards($)).some(c => c.id === id)) {
-        await update($, agents, list => listOf<unknown>(list).map(normalizeCard).map(c => (c.id === id ? { ...c, compactions: c.compactions + 1 } : c)))
-        const sizes = done.tokensBefore !== undefined && done.tokensAfter !== undefined ? ` · ${kTokens(done.tokensBefore)}→${kTokens(done.tokensAfter)}` : ''
-        await say($, await whoIs($, id), `compacted (${e.trigger})${sizes}`, 'info', id)
-      }
+    // Only watching: whatever fails here, the compaction stands as beneath answered it.
+    try {
+      await noteCompaction($, e, done)
+    } catch {
+      // nothing to undo
     }
     return done
   })
@@ -519,7 +529,7 @@ export const register: Register = (on, options) => {
   on('session.send', async ($, e, next) => {
     const p = await outgoing($, e).catch(() => null)
     // Waiting before it goes: its delivery may be raised while it is being sent.
-    if (p) pending.splice(0, Math.max(0, pending.length - 19), p)
+    if (p) pending.splice(0, pending.length, ...queuePending(pending, p.at, p))
     const drop = () => {
       const i = p ? pending.indexOf(p) : -1
       if (i >= 0) pending.splice(i, 1)

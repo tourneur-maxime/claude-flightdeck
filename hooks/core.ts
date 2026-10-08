@@ -509,6 +509,16 @@ export const resolveRecipient = (to: string, cards: AgentCard[], listed: readonl
   return named.length === 1 ? named[0]?.id ?? null : null
 }
 
+/** How long a send waits for its delivery before it is dropped (one to another session never comes). */
+export const PENDING_MS = 60_000
+
+/**
+ * The waiting sends, oldest first, after `p` leaves at `now` (or with none, just pruned): those
+ * waiting longer than PENDING_MS dropped, then the oldest past 20.
+ */
+export const queuePending = (pending: readonly PendingMessage[], now: number, p?: PendingMessage): PendingMessage[] =>
+  [...pending.filter(x => now - x.at < PENDING_MS), ...(p ? [p] : [])].slice(-20)
+
 /**
  * Which waiting message a delivery to `to` completes: there is no id common to a send and its
  * receive, so the latest one sent to that recipient, else the latest one whose recipient was not
@@ -858,23 +868,26 @@ export const adviceLine = (report: string) => {
 
 // ---------------------------------------------------------------- review verdicts
 
-/** `Verdict : **MINEUR**`, `**Verdict global : OK**`, `Verdict — BLOQUANT`: the word right after "verdict". */
-const VERDICT_SAID = /verdict\b[\s*_]*(?:global[\s*_]*)?[:：\-–—]?[\s*_]*(BLOQUANT|MINEUR|OK)\b/i
+/** `Verdict : **MINEUR**`, `**Verdict global : OK**`, ``Verdict : `OK` ``, `Verdict — BLOQUANT`: the word right after "verdict". */
+const VERDICT_SAID = /verdict\b[\s*_`]*(?:global[\s*_`]*)?[:：\-–—]?[\s*_`]*(BLOQUANT|MINEUR|OK)\b/i
+/** A word in capitals, unless negated ("aucun BLOQUANT", "no MINEUR"). */
+const said = (word: string) => new RegExp(`(?<!\\b(?:[Aa]ucune?|[Pp]as de|[Ss]ans|[Nn]o|[Zz]ero|0)\\s+(?:\\*\\*)?)\\b${word}\\b`)
+const SEVERITY: [ReviewVerdict, RegExp][] = [
+  ['BLOQUANT', said('BLOQUANT')],
+  ['MINEUR', said('MINEUR')],
+  // An OK on its own is too common to be a verdict: only in bold.
+  ['OK', /\*\*\s*OK\s*\*\*/],
+]
 /**
- * Otherwise the first BLOQUANT or MINEUR written in capitals, unless negated ("aucun BLOQUANT",
- * "no MINEUR"), or an OK in bold: an OK on its own is too common to be a verdict.
- */
-const VERDICT_WORD = /(?<!\b(?:[Aa]ucune?|[Pp]as de|[Ss]ans|[Nn]o|[Zz]ero|0)\s+(?:\*\*)?)\b(BLOQUANT|MINEUR)\b|\*\*\s*(OK)\s*\*\*/
-/**
- * The verdict a review agent's report gives, read from its text: `BLOQUANT`, `MINEUR`, `OK`, or
- * null when it states none. A warning or a header before it does not matter. A text reading.
+ * The verdict a review agent's report gives, read from its text: the word after "verdict" when it
+ * says one; otherwise the gravest anywhere in it, BLOQUANT over MINEUR over a bold OK (a report
+ * of checks in bold `**OK**` with two MINEUR points is MINEUR); null when it states none. A warning
+ * or a header before it does not matter. A text reading.
  */
 export const verdictOf = (answer: string): ReviewVerdict | null => {
-  const said = VERDICT_SAID.exec(answer)?.[1]
-  if (said) return said.toUpperCase() as ReviewVerdict
-  const m = VERDICT_WORD.exec(answer)
-  const word = m?.[1] ?? m?.[2]
-  return word ? (word.toUpperCase() as ReviewVerdict) : null
+  const word = VERDICT_SAID.exec(answer)?.[1]
+  if (word) return word.toUpperCase() as ReviewVerdict
+  return SEVERITY.find(([, re]) => re.test(answer))?.[0] ?? null
 }
 
 export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.spawnedAt

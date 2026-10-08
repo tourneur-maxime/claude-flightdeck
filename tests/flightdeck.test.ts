@@ -34,6 +34,7 @@ import {
   parseConfig,
   pickPending,
   prettyModel,
+  queuePending,
   promptLine,
   shortModel,
   handbackOf,
@@ -372,6 +373,11 @@ test("a review agent's verdict is read from its report: after \"verdict\", else 
   expect(verdictOf('un défaut mineur dans le README')).toBe(null) // lowercase: an adjective, not the verdict
   expect(verdictOf('')).toBe(null)
   expect(verdictOf('Implemented the parser; 12 tests pass.')).toBe(null)
+  // Without "verdict", the gravest anywhere: checks in bold **OK** do not hide two MINEUR points.
+  expect(verdictOf('validate : **OK**\ntsc : **OK**\n\nDeux défauts MINEUR.')).toBe('MINEUR')
+  expect(verdictOf('MINEUR : un nom.\nBLOQUANT : le test (c) échoue.')).toBe('BLOQUANT')
+  expect(verdictOf('Verdict : `OK`')).toBe('OK') // between backticks
+  expect(verdictOf('Verdict : **OK**\nUn point MINEUR noté pour plus tard.')).toBe('OK') // what follows "verdict" wins
   // Only tasks that match verdictPattern carry one; the default reads verify, review, check, audit.
   const d = parseConfig({})
   expect(['Vérifier le cycle 2', 'verify the patch', 'Review the parser', 'Audit deps', 'Implémenter le badge'].map(t => d.verdict.test(t))).toEqual([true, true, true, true, false])
@@ -396,6 +402,16 @@ test('a message is addressed by id, name or team address; its delivery is matche
   expect(pickPending(waiting, 'main')).toBe(1) // none to main: the latest unresolved one
   expect(pickPending([p('main', 'b2', 'x'), p('main', 'b3', 'y')], 'main')).toBe(1) // else the latest
   expect(pickPending([], 'b2')).toBe(-1)
+  // The queue is in the order sent: the newest at the end, the oldest dropped past 20 or 60 s.
+  let q = queuePending([], 0, p('main', null, 'to another session'))
+  q = queuePending(q, 1000, { ...p('q1', null, 'to bob'), at: 1000 })
+  expect(q.map(x => x.text)).toEqual(['to another session', 'to bob'])
+  expect(q[pickPending(q, 'q2')]?.from).toBe('q1')
+  const late = { ...p('main', null, 'late'), at: 60_500 }
+  expect(queuePending(q, 60_500, late).map(x => x.text)).toEqual(['to bob', 'late']) // the first waited 60.5 s
+  expect(queuePending(q, 60_900).map(x => x.text)).toEqual(['to bob']) // pruned with nothing new
+  const full = Array.from({ length: 25 }, (_, i) => ({ ...p('main', null, `m${i}`), at: i })).reduce((acc, x) => queuePending(acc, x.at, x), [] as ReturnType<typeof queuePending>)
+  expect([full.length, full[0]?.text, full[19]?.text]).toEqual([20, 'm5', 'm24'])
   expect(taskIdOf('<task-notification><task-id>a85cb34dcbbd615b6</task-id><status>completed</status></task-notification>')).toBe('a85cb34dcbbd615b6')
   expect(taskIdOf('no tags')).toBe(null)
   expect(messageExcerpt('<agent-message from="x">Use token=hunter2 for   the API</agent-message>', 80)).toBe('Use token=••• for the API')
@@ -1380,4 +1396,47 @@ test("a card's context gauge: exact on the main loop's model, ~ on another; a co
   const log = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await log.find({ text: /^compacted \(auto\) · 380k→40k$/ })).toBeDefined()
   await log.unmount()
+})
+
+test('a delivery goes to the latest unresolved send, not the oldest: main to another session, then q1 to bob, then q2 receives', async ($, on) => {
+  const clock = engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `q${++n}` }))
+  on('session.send', () => ({ isDelivered: true }))
+  on('session.receive', (_$, e) => ({ text: e.text }))
+  await $.turn.start({ text: 'go', turnId: 'Q1' })
+  await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
+  await $.agent.spawn(spawn('general-purpose', 'Review the parser'))
+  await $.session.send({ to: 'other-session', text: 'Status?', origin: { kind: 'model' } })
+  await $.session.send({ to: 'bob', text: 'Parser ready for review', origin: { kind: 'model' }, agentId: 'q1' })
+  await $.session.receive({ origin: { kind: 'peer' }, text: 'Parser ready for review', agentId: 'q2' })
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(textOf(await ui.find({ key: 'card-mail-q1' }))).toBe('✉ 0 in · 1 out')
+  expect(textOf(await ui.find({ key: 'card-mail-q2' }))).toBe('✉ 1 in · 0 out')
+  expect(await ui.find({ text: /^→ Review the parser · « Parser ready for review »$/ })).toBeDefined()
+  await ui.unmount()
+  // A send nobody delivered within 60 s no longer waits: a later delivery is not pinned on it.
+  await clock.advance(61_000)
+  await $.session.receive({ origin: { kind: 'peer' }, text: 'Hello from nowhere', agentId: 'q1' })
+  const later = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(textOf(await later.find({ key: 'card-mail-q1' }))).toBe('✉ 1 in · 1 out')
+  expect(await later.find({ text: /« Status\? »/ })).toBeUndefined()
+  expect(await later.find({ text: /^→ Implement the parser · « Hello from nowhere »$/ })).toBeDefined()
+  await later.unmount()
+})
+
+test("a window is learnt only from a measurement: main measured on X, then a step on Y, an agent on Y shows ~", async ($, on) => {
+  engine(on)
+  stepper(on, { input_tokens: 380_000, model: 'claude-sonnet-5-5' })
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'wy1' }))
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  await $.turn.start({ text: 'go', turnId: 'WY1' })
+  await drain($, { turnId: 'WY1', index: 0, model: 'claude-opus-5-5', messageCount: 1 })
+  await $.session.measure({ context: { window: 1_000_000, tokens: 100_000, percent: 10 }, rateLimits: [], cost: { usd: 0 }, changed: ['context'] })
+  await drain($, { turnId: 'WY1', index: 1, model: 'claude-sonnet-5-5', messageCount: 2 }) // main switched, not measured yet
+  await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
+  await drain($, { turnId: 'WY1', index: 2, model: 'claude-sonnet-5-5', messageCount: 3, agentId: 'wy1' })
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(textOf(await ui.find({ key: 'card-stats-wy1' }))).toBe('ctx ▰▰▰▱▱▱▱▱ 38%~ · out 100 · 1 step')
+  await ui.unmount()
 })
