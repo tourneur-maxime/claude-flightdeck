@@ -241,9 +241,8 @@ async function openPane($: EngineInterface) {
 }
 
 async function resetAll($: EngineInterface) {
-  // The agent in view goes too: no read of its conversation after this.
-  stopFeed()
-  feedWatch.agent = null
+  // The agent in view goes too, as `b` takes it: no read of its conversation after this.
+  await closeAgentView($, true)
   await update($, main, m => ({ ...DEFAULT_MAIN, model: normalize(DEFAULT_MAIN, m).model, mode: normalize(DEFAULT_MAIN, m).mode }))
   await update($, architect, () => DEFAULT_ARCHITECT)
   await update($, gate, () => DEFAULT_GATE)
@@ -253,7 +252,6 @@ async function resetAll($: EngineInterface) {
   await update($, turn, () => DEFAULT_TURN)
   await update($, receipt, () => null)
   await update($, view, () => DEFAULT_VIEW)
-  await update($, agentFeed, () => null)
   // The context gauge waits for the next measurement rather than showing the pre-clear fill.
   await update($, usage, x => ({ ...normalize(DEFAULT_USAGE, x), pct: null, tokens: null }))
 }

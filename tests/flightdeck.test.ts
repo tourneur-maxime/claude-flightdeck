@@ -1938,8 +1938,12 @@ test('inline (mini) the pane stays the summary with an agent in view; docked, th
 
 test('/flightdeck reset leaves the agent view too: the dashboard back, no read of that agent after it', async ($, on) => {
   const { clock, world, shown } = await agentReady($, on, () => conversation, o => o('tool.call', () => ({ result: {}, text: 'ok' })))
+  expect((await agentShown(shown)).isDashboard).toBe(false)
   await $.command.run({ command: 'flightdeck', args: 'reset' } as never)
-  expect((await agentShown(shown)).isDashboard).toBe(true)
+  const after = await agentShown(shown)
+  expect(after.isDashboard).toBe(true)
+  expect(after.title).toBe('')
+  expect(await shown.find({ key: 'agent-back' })).toBeUndefined()
   await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'rs1', agentId: 'ap1' } as never)
   await clock.advance(2_000)
   expect(world.reads).toEqual(['ap1'])
