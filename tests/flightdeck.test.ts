@@ -524,6 +524,34 @@ const spawn = (subagentType: string, description: string, parentAgentId?: string
   ...(parentAgentId ? { parentAgentId } : {}),
 })
 
+const agentPane = (bodyColumns: number) => ({
+  ...pane(bodyColumns),
+  requestId: 'flightdeck-agent',
+  props: { ...pane(bodyColumns).props, title: 'Agent', scroll: { offset: 0, bodyRows: 6 } },
+})
+
+/** The world under the agent pane, recorded: panes opened and closed, scrolls, conversations read. */
+const agentWorld = (on: On, answer: (agentId: string | undefined) => unknown = () => []) => {
+  const w = {
+    opened: [] as Record<string, unknown>[],
+    closed: [] as string[],
+    reads: [] as (string | undefined)[],
+  }
+  on('ui.open', (_$, e) => {
+    w.opened.push({ ...e })
+    return { value: { isPlaced: true as const } }
+  })
+  on('ui.close', (_$, e) => {
+    w.closed.push(e.id)
+    return { value: undefined }
+  })
+  on('session.messages', (_$, e) => {
+    w.reads.push(e.agentId)
+    return { value: answer(e.agentId) as never }
+  })
+  return w
+}
+
 test('a fresh session draws on every surface and width, empty panels hidden', async ($, on) => {
   engine(on)
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
@@ -594,8 +622,9 @@ test('pastel keeps the fixed dark-terminal colours', { options: { palette: 'past
   await ui.unmount()
 })
 
-test('subagents become cards in a list, a card expands on its hotkey, and the desktop adds a time axis', async ($, on) => {
+test('subagents become cards in a list, a card opens the agent pane on its hotkey, and the desktop adds a time axis', async ($, on) => {
   engine(on)
+  const world = agentWorld(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `ag${++n}` }))
   await $.turn.start({ text: 'fan out', turnId: 'T1' })
@@ -608,8 +637,17 @@ test('subagents become cards in a list, a card expands on its hotkey, and the de
   expect(await ui.find({ type: 'Svg' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /^Write the parser tests$/ })).toBeUndefined()
   await ui.press({ key: 'card-ag1' })
-  expect(await ui.find({ type: 'Text', text: /^Write the parser tests$/ })).toBeDefined() // the expanded panel, full title
+  expect(world.opened.at(-1)).toEqual({ id: 'flightdeck-agent', title: 'Agent · Write the parser tests', focus: true, closeOnEscape: true })
+  expect(await ui.find({ type: 'Text', text: /^Write the parser tests$/ })).toBeUndefined() // no summary in the main pane any more
   await ui.unmount()
+  // The summary is the agent pane's, on its `i` key.
+  const agentUi = await $.ui.mount({ ...agentPane(64), surface: 'terminal' })
+  expect((await agentUi.find({ key: 'agent-summary' }))?.props.hotkey).toBe('i')
+  expect(await agentUi.find({ key: 'agent-summary-box' })).toBeUndefined()
+  await agentUi.press({ key: 'agent-summary' })
+  expect(await agentUi.find({ key: 'agent-summary-box' })).toBeDefined()
+  expect(await agentUi.find({ type: 'Text', text: /^parent: main$/ })).toBeDefined()
+  await agentUi.unmount()
 
   await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
   await $.agent.spawn(spawn('general-purpose', 'Review the parser'))
@@ -764,8 +802,9 @@ test("a background architect's advice is read from its hand-back", async ($, on)
   await ui.unmount()
 })
 
-test('the list draws the spawn tree: a sub-agent under its parent, any depth, its parent in the expanded panel', async ($, on) => {
+test("the list draws the spawn tree: a sub-agent under its parent, any depth, its parent in the agent pane's summary", async ($, on) => {
   engine(on)
+  agentWorld(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `g${++n}` }))
   await $.turn.start({ text: 'go', turnId: 'G1' })
@@ -785,10 +824,16 @@ test('the list draws the spawn tree: a sub-agent under its parent, any depth, it
     const titles = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => String(k).startsWith('card-'))
     expect(titles).toEqual(['card-g1', 'card-g3', 'card-g4', 'card-g2'])
     await ui.press({ key: 'card-g4' })
-    expect(await ui.find({ text: /^parent: Write parser tests$/ })).toBeDefined()
-    await ui.press({ key: 'card-g1' })
-    expect(await ui.find({ text: /^parent: main$/ })).toBeDefined()
-    await ui.press({ key: 'card-g1' }) // closes it again
+    const agentUi = await $.ui.mount({ ...agentPane(cols), surface: 'terminal' })
+    if (!(await agentUi.find({ key: 'agent-summary-box' }))) await agentUi.press({ key: 'agent-summary' })
+    expect(await agentUi.find({ text: /^parent: Write parser tests$/ })).toBeDefined()
+    await ui.press({ key: 'card-g1' }) // the same pane, another agent: its summary closed until asked
+    expect(await agentUi.find({ key: 'agent-summary-box' })).toBeUndefined()
+    await agentUi.press({ key: 'agent-summary' })
+    expect(await agentUi.find({ text: /^parent: main$/ })).toBeDefined()
+    await agentUi.press({ key: 'agent-summary' }) // closes it again
+    expect(await agentUi.find({ key: 'agent-summary-box' })).toBeUndefined()
+    await agentUi.unmount()
     await ui.unmount()
   }
 })
@@ -893,6 +938,7 @@ test('a wide title (CJK, emoji) stays on one row of its card, cut in cells, neve
 
 test('every card kept is drawn, none "earlier"; hotkeys 1-9, the cards after them without one', async ($, on) => {
   engine(on)
+  const world = agentWorld(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `e${++n}` }))
   await $.turn.start({ text: 'go', turnId: 'E1' })
@@ -903,9 +949,9 @@ test('every card kept is drawn, none "earlier"; hotkeys 1-9, the cards after the
   const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('card-'))
   expect(buttons.map(b => b.props.label)).toEqual(Array.from({ length: 11 }, (_, i) => `job ${i + 1}`))
   expect(buttons.map(b => b.props.hotkey)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', undefined, undefined])
-  expect(await ui.find({ text: /^1-9 expand$/ })).toBeDefined()
-  await ui.press({ key: 'card-e11' }) // still expands, by a press
-  expect(await ui.find({ type: 'Text', text: /^job 11$/ })).toBeDefined()
+  expect(await ui.find({ text: /^1-9 open$/ })).toBeDefined()
+  await ui.press({ key: 'card-e11' }) // still opens, by a press
+  expect(world.opened.at(-1)?.title).toBe('Agent · job 11')
   await ui.unmount()
 })
 
@@ -1067,7 +1113,7 @@ test('the agents title never runs past the frame: the hotkey hint gives way firs
     const texts = under(header as { children?: unknown[] }).filter(t => t.type === 'Text')
     expect(texts[0]?.text).toBe('agents · 12 running · 12 total')
     expect(texts[0]?.props.wrap).toBe('truncate')
-    expect(texts.some(t => t.text === '1-9 expand')).toBe(hint)
+    expect(texts.some(t => t.text === '1-9 open')).toBe(hint)
     expect(texts.reduce((sum, t) => sum + t.text.length, 0) + (texts.length - 1) <= cols - 4).toBe(true)
     await ui.unmount()
   }
@@ -1544,4 +1590,158 @@ test("a subagent's transcript path: the one SubagentStop named, else beside the 
   expect(isAtEnd({ offset: 40, bodyRows: 20, contentRows: 60 })).toBe(true)
   expect(isAtEnd({ offset: 3, bodyRows: 20, contentRows: 60 })).toBe(false)
   expect(isAtEnd({ offset: 0, bodyRows: 20, contentRows: 12 })).toBe(true)
+})
+
+const agentReady = async ($: Engine, on: On, answer: (agentId: string | undefined) => unknown = () => conversation, before: (on: On) => void = () => undefined) => {
+  before(on)
+  const clock = engine(on, 50_000)
+  const world = agentWorld(on, answer)
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'ap1' }))
+  await $.turn.start({ text: 'go', turnId: 'AP1' })
+  await $.agent.spawn(spawn('general-purpose', 'Audit the repository'))
+  // The agent pane on screen, as the press opens it.
+  const shown = await $.ui.mount({ ...agentPane(64), surface: 'terminal' })
+  const main = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await main.press({ key: 'card-ap1' })
+  await main.unmount()
+  return { clock, world, shown }
+}
+
+/** What the agent pane shows now: its title, its texts, whether no agent is open. */
+const agentShown = async (ui: { findAll: (q: { type: string }) => Promise<{ text: string }[]> }) => {
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  return { title: texts[0] ?? '', texts, isEmpty: texts.some(t => /^No agent open/.test(t)) }
+}
+
+test("a card's press opens the agent pane on that agent's conversation, read once", async ($, on) => {
+  const { world, shown: pane0 } = await agentReady($, on)
+  expect(world.opened).toEqual([{ id: 'flightdeck-agent', title: 'Agent · Audit the repository', focus: true, closeOnEscape: true }])
+  expect(world.reads).toEqual(['ap1'])
+  const shown = await agentShown(pane0)
+  expect(shown.title).toBe('Audit the repository')
+  expect(shown.texts.filter(t => /^(▶ user|◆ assistant)$/.test(t))).toEqual(['▶ user', '◆ assistant'])
+  expect(shown.texts.some(t => /^read \d\d:\d\d:\d\d$/.test(t))).toBe(true)
+})
+
+test('the agent pane at 40, 64 and 120 columns: role headers, a line per call within the width, results cut to 3 lines', async ($, on) => {
+  await (await agentReady($, on)).shown.unmount()
+  for (const cols of [40, 64, 120]) {
+    const ui = await $.ui.mount({ ...agentPane(cols), surface: 'terminal' })
+    expect((await ui.find({ type: 'Text', text: /^Audit the repository$/ }))?.props.color).toBe('suggestion')
+    const user = await ui.find({ type: 'Text', text: /^▶ user$/ })
+    const assistant = await ui.find({ type: 'Text', text: /^◆ assistant$/ })
+    expect([user?.props.color, assistant?.props.color]).toEqual(['inactive', 'suggestion'])
+    expect((await ui.find({ type: 'Text', text: /^Looking at the tree first\./ }))?.props.wrap).toBe('wrap')
+    expect(await ui.find({ text: /abc123/ })).toBeUndefined()
+    const calls = (await ui.findAll({ type: 'Text' })).filter(t => /^[⚒✗] /.test(t.text))
+    expect(calls.map(t => t.text.split(' ')[0])).toEqual(['⚒', '✗'])
+    expect(calls[1]?.props.color).toBe('error')
+    for (const t of calls) expect(cellWidth(t.text) <= cols).toBe(true)
+    expect(await ui.find({ type: 'Text', text: /^ {2}… \(\+3 lines\)$/ })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /^ {2}On branch main$/ }))?.props.color).toBe('inactive')
+    expect(await ui.find({ text: /earlier message/ })).toBeUndefined()
+    expect(await ui.find({ text: /^read \d\d:\d\d:\d\d$/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('a conversation past the budget shows its end under a line counting the earlier messages', async ($, on) => {
+  const many = Array.from({ length: 430 }, (_, i) => ({ role: (i % 2 ? 'assistant' : 'user') as 'user' | 'assistant', text: `message ${i}`, toolUses: [] }))
+  const { shown: ui } = await agentReady($, on, () => many)
+  expect(await ui.find({ type: 'Text', text: /^… 30 earlier messages$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^message 429$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^message 29$/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test("an ended agent the session no longer serves is read from its saved transcript, at the path SubagentStop named", async ($, on) => {
+  const reads: string[] = []
+  on('fs.stat', () => ({ value: { kind: 'file' as const, size: jsonl.length, mtimeMs: 0, isLink: false } }))
+  on('fs.read', (_$, e) => {
+    reads.push(e.path)
+    return { value: jsonl }
+  })
+  on('classic.SubagentStop', () => ({}))
+  const clock = engine(on, 50_000)
+  agentWorld(on, () => ({ deny: 'agent ap1 finished; no saved transcript is read back' }))
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'ap1' }))
+  await $.turn.start({ text: 'go', turnId: 'AP1' })
+  await $.agent.spawn(spawn('general-purpose', 'Audit the repository'))
+  await $.classic.SubagentStop({ stop_hook_active: false, agent_id: 'ap1', agent_type: 'general-purpose', agent_transcript_path: '/t/s/subagents/agent-ap1.jsonl', transcript_path: '/t/s.jsonl' })
+  const main = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await main.press({ key: 'card-ap1' })
+  await main.unmount()
+  expect(reads).toEqual(['/t/s/subagents/agent-ap1.jsonl'])
+  const ui = await $.ui.mount({ ...agentPane(64), surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /^read \d\d:\d\d:\d\d · from the saved transcript$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^✗ Read → repo\/x\.ts$/ })).toBeDefined()
+  expect(await ui.find({ text: /hunter2/ })).toBeUndefined()
+  await ui.unmount()
+  void clock
+})
+
+test('no conversation and no transcript to read: the pane says why', async ($, on) => {
+  on('fs.stat', () => ({ value: { kind: 'file' as const, size: 6 * 1024 * 1024, mtimeMs: 0, isLink: false } }))
+  on('env.get', () => ({ value: undefined }))
+  on('session.cwd', () => ({ value: '/w' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('classic.UserPromptSubmit', () => ({}))
+  const { shown: ui } = await agentReady($, on, () => ({ deny: 'agent ap1 is not readable' }))
+  // No transcript path known (no SubagentStop, no envelope, no HOME): said as such.
+  expect(await ui.find({ type: 'Text', text: /^transcript unavailable: agent ap1 is not readable · no transcript path known$/ })).toBeDefined()
+  await ui.unmount()
+  // Once the main transcript is known, a file over 4 MiB is not read.
+  await $.classic.UserPromptSubmit({ prompt: 'x', transcript_path: '/t/s.jsonl' } as never)
+  const big = await $.ui.mount({ ...agentPane(64), surface: 'terminal' })
+  await $.ui.mount({ ...pane(64), surface: 'terminal' }).then(async m => {
+    await m.press({ key: 'card-ap1' })
+    await m.unmount()
+  })
+  expect(await big.find({ type: 'Text', text: /saved transcript is 6\.0 MiB, over the 4 MiB read limit$/ })).toBeDefined()
+  expect((await big.find({ type: 'Text', text: /^transcript unavailable/ }))?.props.color).toBe('error')
+  await big.unmount()
+})
+
+test("while the agent runs, its steps and calls read the conversation again, at most once a second, and once more at its end", async ($, on) => {
+  let round = 0
+  const { clock, world, shown } = await agentReady(
+    $,
+    on,
+    () => [...conversation, ...Array.from({ length: round }, (_, i) => ({ role: 'assistant' as const, text: `step ${i}`, toolUses: [] }))],
+    o => {
+      stepper(o)
+      o('tool.call', () => ({ result: {}, text: 'ok' }))
+    },
+  )
+  round = 1
+  await drain($, { turnId: 'AP1', index: 0, model: 'claude-sonnet-5-5', messageCount: 2, agentId: 'ap1' })
+  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'ap-c1', agentId: 'ap1' } as never)
+  expect(world.reads).toEqual(['ap1']) // nothing at once: one read waits for both
+  await clock.advance(1_100)
+  expect(world.reads).toEqual(['ap1', 'ap1'])
+  expect((await agentShown(shown)).texts).toContain('step 0')
+  // Another agent's step reads nothing.
+  await drain($, { turnId: 'AP1', index: 1, model: 'claude-sonnet-5-5', messageCount: 3, agentId: 'other' })
+  await clock.advance(1_100)
+  expect(world.reads.length).toBe(2)
+  round = 2
+  await $.turn.complete({ answer: 'done', durationMs: 10, isAborted: false, turnId: 'AP1', agentId: 'ap1', reason: 'answer' })
+  await clock.advance(1_100)
+  expect(world.reads.length).toBe(3) // the last read, at its end
+  expect((await agentShown(shown)).texts).toContain('step 1')
+})
+
+test('closing the agent pane drops its conversation; the session ending closes it', async ($, on) => {
+  const { world, shown } = await agentReady($, on, () => conversation, o => o('session.end', (_$, e) => ({ sessionId: e.sessionId })))
+  expect((await agentShown(shown)).title).toBe('Audit the repository')
+  await $.command.run({ command: 'flightdeck', args: 'close' } as never) // closes both panes
+  expect(world.closed).toEqual(['flightdeck-agent', 'flightdeck'])
+  expect((await agentShown(shown)).isEmpty).toBe(true)
+  // Opened again, then the session ends.
+  const main = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await main.press({ key: 'card-ap1' })
+  await main.unmount()
+  await $.session.end({ reason: 'other', sessionId: 's' } as never)
+  expect(world.closed).toEqual(['flightdeck-agent', 'flightdeck', 'flightdeck-agent'])
+  expect((await agentShown(shown)).isEmpty).toBe(true)
 })

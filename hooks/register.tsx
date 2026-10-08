@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentCard, Architect, Bucket, Check, Gate, Layout, LogLine, Loop, Main, ReviewVerdict, Roster, Turn, Usage, View } from '../types'
+import type { AgentCard, AgentFeed, Architect, Bucket, Check, Gate, Layout, LogLine, Loop, Main, ReviewVerdict, Roster, Turn, Usage, View } from '../types'
 import {
   DEFAULT_ARCHITECT,
   DEFAULT_GATE,
@@ -11,8 +11,11 @@ import {
   DEFAULT_USAGE,
   DEFAULT_VIEW,
   EDIT_TOOLS,
+  FEED_DEBOUNCE_MS,
   SCHEMA_VERSION,
+  TRANSCRIPT_MAX_BYTES,
   afterCall,
+  agentPaneTitle,
   agentTree,
   agentsRows,
   applyStep,
@@ -29,7 +32,9 @@ import {
   consultTimeline,
   describeInput,
   endConsult,
+  feedOf,
   FLASH_MS,
+  fmtBytes,
   fitLegend,
   fmtClock,
   fmtDuration,
@@ -40,7 +45,9 @@ import {
   gauge,
   isAdvising,
   isFlashing,
+  isAtEnd,
   isLoopActive,
+  jsonlMessages,
   kTokens,
   limitLabel,
   listOf,
@@ -50,6 +57,7 @@ import {
   momentOf,
   normalize,
   normalizeCard,
+  normalizeFeed,
   normalizeGate,
   normalizeLog,
   normalizeWindows,
@@ -73,10 +81,12 @@ import {
   settleCheck,
   shorten,
   shortenCells,
+  shortModel,
   startConsult,
   stepLoop,
   taskIdOf,
   timeBars,
+  transcriptPath,
   verdictOf,
   windowFor,
 } from './core'
@@ -85,6 +95,10 @@ import type { ClawdSpan, Config, Panel, PendingMessage } from './core'
 const PANE = 'flightdeck'
 const TITLE = 'Flightdeck'
 const PANE_COLUMNS = 66
+/** The second pane: one agent's whole conversation, opened from its card. */
+const AGENT_PANE = 'flightdeck-agent'
+/** A read waits this long after the event that asked for it, so the row behind it is stored. */
+const FEED_SETTLE_MS = 100
 
 
 // ---------------------------------------------------------------- state
@@ -102,6 +116,7 @@ const receipt = atom({ plugin: 'flightdeck', key: 'receipt' } as const, null)
 const view = atom({ plugin: 'flightdeck', key: 'view' } as const, DEFAULT_VIEW)
 const roster = atom({ plugin: 'flightdeck', key: 'roster' } as const, DEFAULT_ROSTER)
 const windows = atom({ plugin: 'flightdeck', key: 'windows' } as const, {})
+const agentFeed = atom({ plugin: 'flightdeck', key: 'agentFeed' } as const, null)
 
 type ServerBlock = { type: string; id?: string; name?: string; tool_use_id?: string }
 
@@ -137,6 +152,10 @@ async function getView($: EngineInterface): Promise<View> {
 async function getRoster($: EngineInterface): Promise<Roster> {
   const r = normalize(DEFAULT_ROSTER, await read($, roster))
   return { architectTypes: listOf(r.architectTypes) }
+}
+
+async function getFeed($: EngineInterface): Promise<AgentFeed | null> {
+  return normalizeFeed(await read($, agentFeed))
 }
 
 async function getWindows($: EngineInterface): Promise<Record<string, number>> {
@@ -230,6 +249,7 @@ async function resetAll($: EngineInterface) {
   await update($, turn, () => DEFAULT_TURN)
   await update($, receipt, () => null)
   await update($, view, () => DEFAULT_VIEW)
+  await update($, agentFeed, () => null)
   // The context gauge waits for the next measurement rather than showing the pre-clear fill.
   await update($, usage, x => ({ ...normalize(DEFAULT_USAGE, x), pct: null, tokens: null }))
 }
@@ -238,6 +258,42 @@ async function resetAll($: EngineInterface) {
 async function costNow($: EngineInterface): Promise<number | null> {
   const u = await $.session.usage().catch(() => null)
   return u?.cost?.usd ?? null
+}
+
+const reasonOf = (err: unknown) => (err instanceof Error ? err.message : String(err))
+
+/** Where the session keeps its files, for a transcript path no event has named yet. */
+async function whereabouts($: EngineInterface) {
+  const [configDir, home, cwd, sessionId] = await Promise.all([
+    $.env.get('CLAUDE_CONFIG_DIR').catch(() => undefined),
+    $.env.get('HOME').catch(() => undefined),
+    $.session.cwd().catch(() => undefined),
+    $.session.id().catch(() => undefined),
+  ])
+  return { configDir, home, cwd, sessionId }
+}
+
+/**
+ * An agent's conversation, read in a hook (a render may not write state): from the session, else,
+ * when the session no longer serves it (`{ deny }`), from its saved transcript. Never rejects: what
+ * could not be read is said in `deny`.
+ */
+async function readFeed($: EngineInterface, agentId: string, where: { known: string | null; mainTranscript: string | null }): Promise<AgentFeed> {
+  const readAt = await $.clock.now()
+  const empty = { agentId, entries: [], omitted: 0, readAt }
+  const got = await $.session.messages({ agentId }).catch((err: unknown) => ({ deny: reasonOf(err) }))
+  if (Array.isArray(got)) return { ...empty, ...feedOf(got), source: 'session', deny: null }
+  const denied = got.deny
+  const known = where.known || where.mainTranscript ? {} : await whereabouts($)
+  const path = transcriptPath({ agentId, ...where, ...known })
+  const unavailable = (why: string): AgentFeed => ({ ...empty, source: 'transcript', deny: `${denied} · ${why}` })
+  if (!path) return unavailable('no transcript path known')
+  const stat = await $.fs.stat(path).catch(() => null)
+  if (!stat || stat.kind !== 'file') return unavailable('no saved transcript')
+  if (stat.size > TRANSCRIPT_MAX_BYTES) return unavailable(`saved transcript is ${fmtBytes(stat.size)}, over the 4 MiB read limit`)
+  const text = await $.fs.read(path).catch((err: unknown) => new Error(reasonOf(err)))
+  if (text instanceof Error) return unavailable(`saved transcript unreadable: ${text.message}`)
+  return { ...empty, ...feedOf(jsonlMessages(text)), source: 'transcript', deny: null }
 }
 
 async function noteMode($: EngineInterface, mode: string | undefined) {
@@ -308,6 +364,75 @@ async function noteDelivery($: EngineInterface, cfg: Config, pending: PendingMes
   await refreshStatus($, cfg)
 }
 
+// ---------------------------------------------------------------- the agent pane's bookkeeping
+
+// The module's own, gone on a reload (each is then read again). Saved transcripts by agent, as
+// SubagentStop names them; the main one, from any classic event's envelope.
+const agentTranscripts = new Map<string, string>()
+const feedWatch: {
+  mainTranscript: string | null
+  /** The agent the pane follows; undefined after a reload, until the stored feed is read once. */
+  agent: string | null | undefined
+  lastReadAt: number
+  timer: { cancel: () => void } | null
+  /** Keep the pane at the end: true when it opens, then whatever the person's last scroll left. */
+  follow: boolean
+} = { mainTranscript: null, agent: undefined, lastReadAt: 0, timer: null, follow: true }
+
+async function followedAgent($: EngineInterface): Promise<string | null> {
+  if (feedWatch.agent === undefined) feedWatch.agent = (await getFeed($))?.agentId ?? null
+  return feedWatch.agent
+}
+
+function stopFeed() {
+  feedWatch.timer?.cancel()
+  feedWatch.timer = null
+}
+
+/** Reads the followed agent's conversation into the pane's state, then keeps the end in view. */
+async function refreshFeed($: EngineInterface, id: string) {
+  const f = await readFeed($, id, { known: agentTranscripts.get(id) ?? null, mainTranscript: feedWatch.mainTranscript })
+  feedWatch.lastReadAt = f.readAt
+  // Closed, or another agent opened, while it read.
+  if (feedWatch.agent !== id) return
+  await update($, agentFeed, () => f)
+  if (feedWatch.follow) await $.ui.scroll({ in: AGENT_PANE, to: 'end' }).catch(() => undefined)
+}
+
+/**
+ * Something happened in an agent's loop: when the pane follows it, read again, at most once a
+ * FEED_DEBOUNCE_MS and never at once (the row behind the event lands first). A read already
+ * waiting covers every event until it runs, the agent's last one included.
+ */
+async function requestFeed($: EngineInterface, id: string) {
+  if ((await followedAgent($)) !== id || feedWatch.timer) return
+  const now = await $.clock.now()
+  const delay = Math.max(FEED_SETTLE_MS, feedWatch.lastReadAt + FEED_DEBOUNCE_MS - now)
+  feedWatch.timer = $.clock.after(delay, () => {
+    feedWatch.timer = null
+    void refreshFeed($, id).catch(() => undefined)
+  })
+}
+
+/** A card pressed: the agent pane opens (or is retitled) on its conversation, read now. */
+async function openAgent($: EngineInterface, card: AgentCard) {
+  stopFeed()
+  feedWatch.agent = card.id
+  feedWatch.follow = true
+  // Its title and a "reading" line at once, not the previous agent's conversation.
+  const reading: AgentFeed = { agentId: card.id, entries: [], omitted: 0, readAt: 0, source: 'session', deny: null }
+  await update($, agentFeed, () => reading)
+  await $.ui.open({ id: AGENT_PANE, title: agentPaneTitle(cardTitle(card)), focus: true, closeOnEscape: true }).catch(() => undefined)
+  await refreshFeed($, card.id)
+}
+
+/** The agent pane closed, or the session ended: the conversation goes with it. */
+async function dropFeed($: EngineInterface) {
+  stopFeed()
+  feedWatch.agent = null
+  await update($, agentFeed, () => null)
+}
+
 // ---------------------------------------------------------------- hooks
 
 export const register: Register = (on, options) => {
@@ -345,6 +470,11 @@ export const register: Register = (on, options) => {
   })
 
   on('session.end', async ($, e, next) => {
+    if (await followedAgent($).catch(() => null)) {
+      stopFeed()
+      await $.ui.close({ id: AGENT_PANE }).catch(() => undefined)
+      await dropFeed($)
+    }
     if (e.reason === 'clear') {
       await resetAll($)
       await refreshStatus($, cfg)
@@ -355,6 +485,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'flightdeck' }, async ($, e) => {
     const [verb = 'open', arg = ''] = e.args.trim().split(/\s+/)
     if (verb === 'close') {
+      await $.ui.close({ id: AGENT_PANE }).catch(() => undefined)
       await $.ui.close({ id: PANE })
       return { text: 'Flightdeck closed.' }
     }
@@ -372,12 +503,35 @@ export const register: Register = (on, options) => {
     }
     const opened = await openPane($)
     if (!opened.isPlaced) return { text: `Flightdeck is not shown yet: ${opened.reason}` }
-    return { text: 'Flightdeck opened. Focus it with ctrl+x tab; 1-9 expand cards, f/s/o open the gate rows.' }
+    return { text: "Flightdeck opened. Focus it with ctrl+x tab; 1-9 open an agent's conversation, f/s/o open the gate rows." }
   })
 
   on('classic.UserPromptSubmit', async ($, e, next) => {
+    if (e.transcript_path) feedWatch.mainTranscript = e.transcript_path
     await noteMode($, e.permission_mode)
     return next(e)
+  })
+
+  // Watch only: where an agent's transcript was saved, for the agent pane once the session no
+  // longer serves its conversation.
+  on('classic.SubagentStop', async ($, e, next) => {
+    if (e.agent_id && e.agent_transcript_path) agentTranscripts.set(e.agent_id, e.agent_transcript_path)
+    if (e.transcript_path) feedWatch.mainTranscript = e.transcript_path
+    return next(e)
+  })
+
+  // The agent pane closed (Escape, its close mark, a command): the conversation goes with it.
+  on('ui.close', { id: AGENT_PANE }, async ($, e, next) => {
+    const closed = await next(e)
+    await dropFeed($)
+    return closed
+  })
+
+  // Watch only: the person scrolling the agent pane decides whether it keeps following the end.
+  on('ui.scroll', { requestId: AGENT_PANE }, async ($, e, next) => {
+    const moved = await next(e)
+    if (e.origin.kind === 'person' && moved.deny === undefined) feedWatch.follow = isAtEnd(e)
+    return moved
   })
 
   on('agent.offer', async ($, e, next) => {
@@ -429,6 +583,7 @@ export const register: Register = (on, options) => {
       const now = await $.clock.now()
       await update($, loops, l => stepLoop(listOf<Loop>(l), id, now))
     }
+    await requestFeed($, id).catch(() => undefined)
     return result
   })
 
@@ -482,6 +637,7 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     callLoop.set(e.tool_use_id, e.agentId ?? null)
     const ran = await next(e).finally(() => callLoop.delete(e.tool_use_id))
+    if (e.agentId) await requestFeed($, e.agentId).catch(() => undefined)
     const didRun = ran.deny === undefined
     // Settle this call's pending ask, if it had one; skip the write (and the redraw) otherwise.
     const g0 = await getGate($)
@@ -607,6 +763,8 @@ export const register: Register = (on, options) => {
     const done = await next(e)
     const id = e.agentId
     const now = await $.clock.now()
+    // The agent pane reads its conversation one last time.
+    if (id) await requestFeed($, id).catch(() => undefined)
     if (!id) {
       const [t, cards, cost] = await Promise.all([getTurn($), getCards($), costNow($)])
       const r = receiptOf(t, {
@@ -874,8 +1032,8 @@ export const register: Register = (on, options) => {
     const verdictColors: Record<ReviewVerdict, string> = { BLOQUANT: C.warn, MINEUR: C.amber, OK: C.gate }
     const statusColor = (c: AgentCard) => (c.status === 'failed' ? C.warn : c.status === 'done' ? C.gate : C.agent)
     const glyph = (c: AgentCard) => (c.status === 'running' ? '◐' : c.status === 'done' ? '✓' : c.status === 'failed' ? '✗' : '■')
-    const expandOnPress = (id: string) => () =>
-      update($, view, x => ({ ...normalize(DEFAULT_VIEW, x), expanded: normalize(DEFAULT_VIEW, x).expanded === id ? null : id }))
+    // A card's title opens the agent pane on its conversation (one pane, retitled per agent).
+    const openOnPress = (c: AgentCard) => () => openAgent($, c)
 
     const agentsPanel = (w: number) => {
       // A frame like the other panels', in the agents' colour: everything inside is laid out on
@@ -888,7 +1046,7 @@ export const register: Register = (on, options) => {
       const iw = Math.max(1, w - 4)
       // The title truncates rather than run past the frame; the hotkey hint shows only beside it.
       const title = `agents · ${running.length} running · ${cards.length} total`
-      const hint = cards.length > 0 ? `1-${Math.min(cards.length, 9)} expand` : ''
+      const hint = cards.length > 0 ? `1-${Math.min(cards.length, 9)} open` : ''
       const header = (
         <Box justifyContent="space-between" width={iw}>
           <Text color={C.agent} bold wrap="truncate">
@@ -951,7 +1109,7 @@ export const register: Register = (on, options) => {
                 >
                   {/* Cut in cells, then held to one row: a wide title never wraps the card taller. */}
                   <Box key={`card-title-${c.id}`} width={cw} height={1} overflow="hidden">
-                    <Button key={`card-${c.id}`} plain {...hot} label={shortenCells(cardTitle(c), cw - (i < 9 ? 3 : 0))} onPress={expandOnPress(c.id)} />
+                    <Button key={`card-${c.id}`} plain {...hot} label={shortenCells(cardTitle(c), cw - (i < 9 ? 3 : 0))} onPress={openOnPress(c)} />
                   </Box>
                   {/* A row of its own: its type and model, and at its right end a review agent's verdict. */}
                   <Box key={`card-kind-${c.id}`} justifyContent="space-between" width={cw}>
@@ -991,29 +1149,6 @@ export const register: Register = (on, options) => {
         </Box>,
       )
     }
-
-    const expandedCard = cards.find(c => c.id === v.expanded)
-    const expandedPanel = (w: number) =>
-      expandedCard ? (
-        <Box flexDirection="column" borderStyle="single" borderColor={C.agent} paddingX={1} width={w}>
-          <Text bold wrap="wrap">
-            {expandedCard.description || expandedCard.type}
-          </Text>
-          <Text dimColor wrap="truncate">{`${expandedCard.type} · ${prettyModel(expandedCard.model)} · ${expandedCard.status} · ${expandedCard.steps} steps`}</Text>
-          <Text dimColor wrap="truncate">{`parent: ${shorten(parentLabel(expandedCard, cards, a.ids, cfg.architectLabel.toLowerCase()), Math.max(10, w - 12))}`}</Text>
-          {expandedCard.tools.length === 0 ? <Text color={C.faint}>no tool calls yet</Text> : null}
-          {expandedCard.tools.map(n => (
-            <Text color={n.isError ? C.warn : C.text} wrap="truncate">
-              {`${n.isError ? '✗' : '·'} ${n.text}`}
-            </Text>
-          ))}
-          {expandedCard.answer ? (
-            <Text dimColor wrap="wrap">
-              {`» ${shorten(expandedCard.answer, 240)}`}
-            </Text>
-          ) : null}
-        </Box>
-      ) : null
 
     // ---- other loops (workflow agents, forks): ids that match no card
     const loopsPanel = (w: number) => {
@@ -1066,7 +1201,6 @@ export const register: Register = (on, options) => {
       6 +
       (v.gateOpen ? 5 : 0) +
       (panels.includes('agents') ? agentsRows(cards.length) : 0) +
-      (expandedCard ? 9 : 0) +
       (lp.length ? 1 : 0) +
       3 +
       (showMascot ? 3 : 0)
@@ -1125,7 +1259,6 @@ export const register: Register = (on, options) => {
             <Box flexDirection="column">
               {link}
               {draw(p, w)}
-              {p === 'agents' ? expandedPanel(w) : null}
             </Box>
           )
         })}
@@ -1299,6 +1432,134 @@ export const register: Register = (on, options) => {
         </Box>
         {body}
         {svgTimeline}
+      </Box>
+    )
+  })
+
+  // ---------------------------------------------------------------- the agent pane
+
+  // One agent's conversation, as the hooks last read it (never read here: a render may not write
+  // state, and it runs up to 30 times a second). The pane scrolls natively; nothing is estimated.
+  on('ui.render', { component: 'Pane', requestId: AGENT_PANE }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const [feed, cards, v, a] = await Promise.all([getFeed($), getCards($), getView($), getArchitect($)])
+    const W = Math.max(20, e.props.bodyColumns)
+    if (!feed) {
+      return (
+        <Box flexDirection="column" width={W}>
+          <Text color={C.faint} wrap="wrap">
+            No agent open: press a card's title in Flightdeck, or its hotkey (1-9).
+          </Text>
+        </Box>
+      )
+    }
+    const card = cards.find(c => c.id === feed.agentId)
+    const glyph = card ? (card.status === 'running' ? '◐' : card.status === 'done' ? '✓' : card.status === 'failed' ? '✗' : '■') : '·'
+    const stateColor = card?.status === 'failed' ? C.warn : card?.status === 'done' ? C.gate : C.agent
+    const isSummary = Boolean(card) && v.expanded === feed.agentId
+    const label = isSummary ? 'summary ▾' : 'summary ▸'
+    // The Button draws its hotkey beside its label: 3 cells kept for it.
+    const buttonW = cellWidth(label) + 3
+    const kind = card ? `${glyph} ${card.status} · ${card.type} · ${shortModel(card.model)} · ${plural(card.steps, 'step')}` : `${glyph} ${feed.agentId}`
+    const toggleSummary = () =>
+      update($, view, x => {
+        const y = normalize(DEFAULT_VIEW, x)
+        return { ...y, expanded: y.expanded === feed.agentId ? null : feed.agentId }
+      })
+
+    // The card's summary (the `i` key): its task in full, parent, latest calls, the start of its report.
+    const summary =
+      card && isSummary ? (
+        <Box key="agent-summary-box" flexDirection="column" borderStyle="single" borderColor={C.agent} paddingX={1} width={W}>
+          <Text bold wrap="wrap">
+            {card.description || card.type}
+          </Text>
+          <Text dimColor wrap="truncate">{`${card.type} · ${prettyModel(card.model)} · ${card.status} · ${plural(card.steps, 'step')}`}</Text>
+          <Text dimColor wrap="truncate">{`parent: ${shorten(parentLabel(card, cards, a.ids, cfg.architectLabel.toLowerCase()), Math.max(10, W - 12))}`}</Text>
+          {card.tools.length === 0 ? <Text color={C.faint}>no tool calls yet</Text> : null}
+          {card.tools.map(n => (
+            <Text color={n.isError ? C.warn : C.text} wrap="truncate">
+              {`${n.isError ? '✗' : '·'} ${n.text}`}
+            </Text>
+          ))}
+          {card.answer ? (
+            <Text dimColor wrap="wrap">
+              {`» ${shorten(card.answer, 240)}`}
+            </Text>
+          ) : null}
+        </Box>
+      ) : null
+
+    const body =
+      feed.readAt === 0 ? (
+        <Text color={C.faint}>reading…</Text>
+      ) : feed.entries.length === 0 ? (
+        <Text color={feed.deny ? C.warn : C.faint} wrap="wrap">
+          {feed.deny ? `transcript unavailable: ${feed.deny}` : 'no messages yet'}
+        </Text>
+      ) : (
+        <Box flexDirection="column" width={W}>
+          {feed.omitted > 0 ? <Text color={C.faint}>{`… ${plural(feed.omitted, 'earlier message')}`}</Text> : null}
+          {feed.entries.map((m, i) => (
+            <Box key={`feed-${i}`} flexDirection="column" width={W}>
+              {m.role === 'assistant' ? (
+                <Text color={C.agent} bold>
+                  ◆ assistant
+                </Text>
+              ) : (
+                <Text color={C.dim}>▶ user</Text>
+              )}
+              {m.text ? (
+                <Text color={m.role === 'user' ? C.dim : C.text} wrap="wrap">
+                  {m.text}
+                </Text>
+              ) : null}
+              {m.tools.map((t, k) => (
+                <Box key={`feed-${i}-tool-${k}`} flexDirection="column" width={W}>
+                  <Text color={t.isError ? C.warn : C.text} wrap="truncate">
+                    {shortenCells(`${t.isError ? '✗' : '⚒'} ${t.text}`, W)}
+                  </Text>
+                  {t.result.map(l => (
+                    <Text color={t.isError ? C.warn : C.dim} wrap="truncate">
+                      {`  ${shortenCells(l, W - 2)}`}
+                    </Text>
+                  ))}
+                  {t.more > 0 ? <Text color={C.faint}>{`  ${shortenCells(`… (+${plural(t.more, 'line')})`, W - 2)}`}</Text> : null}
+                  {t.isPending ? <Text color={C.faint}>  …</Text> : null}
+                </Box>
+              ))}
+            </Box>
+          ))}
+        </Box>
+      )
+
+    return (
+      <Box flexDirection="column" width={W}>
+        <Box width={W} height={1} overflow="hidden">
+          <Text color={C.agent} bold wrap="truncate">
+            {card ? cardTitle(card) : feed.agentId}
+          </Text>
+        </Box>
+        <Box width={W}>
+          <Box width={Math.max(1, W - buttonW - 1)} height={1} overflow="hidden">
+            <Text color={stateColor} wrap="truncate">
+              {shortenCells(kind, Math.max(1, W - buttonW - 1))}
+            </Text>
+          </Box>
+          {card ? (
+            <Box flexShrink={0} marginLeft={1}>
+              <Button key="agent-summary" plain hotkey="i" label={label} onPress={toggleSummary} />
+            </Box>
+          ) : null}
+        </Box>
+        {summary}
+        <Text color={C.faint}>{'─'.repeat(W)}</Text>
+        {body}
+        {feed.readAt > 0 && (feed.entries.length > 0 || !feed.deny) ? (
+          <Text color={C.faint} wrap="truncate">
+            {`read ${fmtClock(feed.readAt)}${feed.source === 'transcript' ? ' · from the saved transcript' : ''}`}
+          </Text>
+        ) : null}
       </Box>
     )
   })
