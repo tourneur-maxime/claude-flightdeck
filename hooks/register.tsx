@@ -464,7 +464,7 @@ async function requestFeed($: EngineInterface, id: string) {
  * gone from the drawing, so the focus ring is put on `back`, where b, p, n and i keep working.
  * Never rejects.
  */
-async function openAgent($: EngineInterface, card: AgentCard) {
+async function openAgent($: EngineInterface, card: AgentCard, isFocused = true) {
   stopFeed()
   const epoch = feedWatch.epoch
   feedWatch.agent = card.id
@@ -475,7 +475,8 @@ async function openAgent($: EngineInterface, card: AgentCard) {
   await update($, agentFeed, () => reading).catch(() => undefined)
   await update($, view, v => ({ ...normalize(DEFAULT_VIEW, v), agent: card.id })).catch(() => undefined)
   await $.ui.scroll({ in: PANE, to: 'start' }).catch(() => undefined)
-  await focusBack($)
+  // From the dashboard only: prev and next leave the focus where the person put it.
+  if (isFocused) await focusBack($)
   await refreshFeed($, card.id, epoch)
   // Back to the top after the first read, unless the person has scrolled down to the end meanwhile.
   if (epoch === feedWatch.epoch && !feedWatch.follow) await $.ui.scroll({ in: PANE, to: 'start' }).catch(() => undefined)
@@ -485,15 +486,20 @@ async function openAgent($: EngineInterface, card: AgentCard) {
  * The focus ring on the agent view's `back`, so b, p, n and i reach the pane. Refused when the
  * pane no longer holds the keys (the pressed element is gone): then the pane asks for them, which
  * the surface grants only while the prompt holds them over an empty composer, and tries again.
- * Never rejects; a refusal left standing is said in the log.
+ * Never rejects; a refusal left standing is said in the log, once per load.
  */
+/** Whether the refusal was said since the module loaded. */
+const focusWatch = { isSaid: false }
+
 async function focusBack($: EngineInterface) {
   const refused = (r: { deny?: string } | null) => r === null || r.deny !== undefined
   const first = await $.ui.focus({ requestId: PANE, key: 'agent-back' }).catch(() => null)
   if (!refused(first)) return
   await $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS, rows: 8, focus: true }).catch(() => undefined)
   const again = await $.ui.focus({ requestId: PANE, key: 'agent-back' }).catch(() => null)
-  if (refused(again)) await say($, 'flightdeck', 'agent view: the keys stayed with the prompt; ctrl+x tab for b, p, n, i').catch(() => undefined)
+  if (!refused(again) || focusWatch.isSaid) return
+  focusWatch.isSaid = true
+  await say($, 'flightdeck', 'agent view: the keys stayed with the prompt; focus the pane (ctrl+x tab) for b, p, n, i').catch(() => undefined)
 }
 
 /**
@@ -1544,7 +1550,7 @@ export const register: Register = (on, options) => {
         const fresh = await getCards($)
         const id = neighbourAgent(fresh, card.id, dir)
         const to = id ? fresh.find(c => c.id === id) : undefined
-        if (to) await openAgent($, to)
+        if (to) await openAgent($, to, false)
       }
       const toggleSummary = () =>
         update($, view, x => {
