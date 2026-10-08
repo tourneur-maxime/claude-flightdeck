@@ -1133,15 +1133,12 @@ export const register: Register = (on, options) => {
         </Box>
       )
       const iw = Math.max(1, w - 4)
-      // The title truncates rather than run past the frame; the hotkey hint shows only beside it.
-      const title = `agents · ${running.length} running · ${cards.length} total`
-      const hint = cards.length > 0 ? `1-${Math.min(cards.length, 9)} card` : ''
+      // The title truncates rather than run past the frame.
       const header = (
-        <Box justifyContent="space-between" width={iw}>
+        <Box width={iw}>
           <Text color={C.agent} bold wrap="truncate">
-            {title}
+            {`agents · ${running.length} running · ${cards.length} total`}
           </Text>
-          {hint && title.length + 1 + hint.length <= iw ? <Text color={C.faint}>{hint}</Text> : null}
         </Box>
       )
       if (cards.length === 0) {
@@ -1259,8 +1256,6 @@ export const register: Register = (on, options) => {
               const isOpen = openLane === c.id
               const isMax = c.lastStop === 'max_tokens'
               const flash = isFlashing(c, now)
-              // Digits 1-9 only: the lanes after the ninth open by a press.
-              const hot = i < 9 ? { hotkey: String(i + 1) } : {}
               const color = isMax ? C.warn : statusColor(c)
               return (
                 <Box key={`lane-${c.id}`} flexDirection="column" width={laneW} flexShrink={0}>
@@ -1272,8 +1267,7 @@ export const register: Register = (on, options) => {
                       <Button
                         key={`lane-${c.id}-title`}
                         plain
-                        {...hot}
-                        label={shortenCells(cardTitle(c), Math.max(1, titleW - (i < 9 ? 3 : 0)))}
+                        label={shortenCells(cardTitle(c), titleW)}
                         onPress={laneOnPress(c.id)}
                       />
                     </Box>

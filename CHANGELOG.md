@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1
+
+- No digit before a lane's title: the lanes lose their hotkeys `1` to `9` and the `1-9 card` hint; a click on the title opens the card.
+- 92 tests.
+
 ## 0.9.0
 
 - The agents are swimlanes again: one row per agent off the animated trunk, in the tree's order, with its state, its task, its time on a shared axis and its clock. Every agent kept (the latest 24) has its lane.

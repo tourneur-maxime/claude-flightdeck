@@ -817,10 +817,10 @@ test('a lane per agent, in the tree order, each as wide as the frame leaves besi
     expect((await ui.findAll({ type: 'Text', text: /^ ◐ $/ })).length).toBe(2)
     expect((await ui.findAll({ type: 'Text', text: /^ ✓ $/ })).length).toBe(3)
     const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('lane-'))
-    expect(buttons.map(b => [b.key, b.props.hotkey])).toEqual(order.map((id, i) => [`lane-${id}-title`, String(i + 1)]))
+    expect(buttons.map(b => [b.key, b.props.hotkey])).toEqual(order.map(id => [`lane-${id}-title`, undefined])) // no digit before a title
     for (const id of order) {
       const titleW = Number((await ui.find({ key: `lane-title-${id}` }))?.props.width)
-      expect(3 + cellWidth(String((await ui.find({ key: `lane-${id}-title` }))?.props.label)) <= titleW).toBe(true) // `1: ` and the title, in its cells
+      expect(cellWidth(String((await ui.find({ key: `lane-${id}-title` }))?.props.label)) <= titleW).toBe(true) // the title alone, in its cells
     }
     // Each lane opened in turn: its card under it, as wide, 7 rows beside the trunk.
     for (const id of order) {
@@ -937,13 +937,13 @@ test('every lane hangs off one trunk from the header; a comet runs down it only 
     expect(props.rows.map(r => r.prefix)).toEqual(['├─', '├─', '├─', '└─'])
     expect(props.rows.map(r => r.active)).toEqual([false, true, false, false])
     expect([spine?.props.width, spine?.props.height]).toEqual([2, 4])
-    // Hotkeys follow the lanes as drawn.
+    // A title Button a lane, in the lanes' order, none with a hotkey.
     const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('lane-'))
     expect(buttons.map(b => [b.key, b.props.hotkey])).toEqual([
-      ['lane-t1-title', '1'],
-      ['lane-t2-title', '2'],
-      ['lane-t3-title', '3'],
-      ['lane-t4-title', '4'],
+      ['lane-t1-title', undefined],
+      ['lane-t2-title', undefined],
+      ['lane-t3-title', undefined],
+      ['lane-t4-title', undefined],
     ])
     // A comet runs down the trunk to the running card's branch: a thick bold head on the wire
     // (┃ down the trunk, ━ along the branch; ├ └ kept), a fading trail; no dots. The ended branches stay dim.
@@ -982,7 +982,7 @@ test('a wide title (CJK, emoji) stays on one row of its lane and of its card, cu
       expect([row?.props.width, row?.props.height, row?.props.overflow]).toEqual([lane?.props.width, 1, 'hidden'])
       const titleW = Number((await ui.find({ key: `lane-title-${id}` }))?.props.width)
       const label = String((await ui.find({ key: `lane-${id}-title` }))?.props.label)
-      expect(3 + cellWidth(label) <= titleW).toBe(true) // `1: ` and the title
+      expect(cellWidth(label) <= titleW).toBe(true) // the title alone, no digit before it
       expect(label.endsWith('…')).toBe(true)
       expect(isCut(label)).toBe(false)
       // Its card opened: the title's row, one row high, as wide as the card's inside, the title
@@ -1003,7 +1003,7 @@ test('a wide title (CJK, emoji) stays on one row of its lane and of its card, cu
   }
 })
 
-test('every agent kept has its lane, none "earlier"; hotkeys 1-9, the lanes after them without one', async ($, on) => {
+test('every agent kept has its lane, none "earlier", and no digit before any title', async ($, on) => {
   engine(on)
   const world = agentWorld(on)
   let n = 0
@@ -1015,8 +1015,8 @@ test('every agent kept has its lane, none "earlier"; hotkeys 1-9, the lanes afte
   expect((await ui.find({ type: 'Client', key: 'spine' }))?.props.height).toBe(11)
   const buttons = (await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('lane-'))
   expect(buttons.map(b => b.props.label)).toEqual(Array.from({ length: 11 }, (_, i) => `job ${i + 1}`))
-  expect(buttons.map(b => b.props.hotkey)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', undefined, undefined])
-  expect(await ui.find({ text: /^1-9 card$/ })).toBeDefined()
+  expect(buttons.every(b => b.props.hotkey === undefined)).toBe(true)
+  expect(await ui.find({ text: /^1-9/ })).toBeUndefined()
   await inspect(ui, 'e11') // still opens, by a press
   expect(textOf(await ui.find({ key: 'agent-heading' }))).toMatch(/^Agent · job 11 · /)
   expect(world.opened).toEqual([])
@@ -1045,7 +1045,7 @@ test('a lane pressed opens its card right under it, pressed again closes it; one
   expect(await trunk()).toEqual(['├─', '├─', ...Array.from({ length: 7 }, () => '│ '), '└─'])
   expect(await glyphOf('ln2')).toBe(' ▾ ')
   expect(await ui.find({ key: 'card-ln2' })).toBeUndefined() // the card's title is no Button: its `inspect ›` is
-  expect(await ui.find({ text: /^1-3 card$/ })).toBeDefined()
+  expect(await ui.find({ text: /^1-3/ })).toBeUndefined() // no digits to press
   // Another lane: its card, the first one closed.
   await ui.press({ key: 'lane-ln3-title' })
   expect(await cardsDrawn()).toEqual(['agent-ln3'])
@@ -1054,8 +1054,8 @@ test('a lane pressed opens its card right under it, pressed again closes it; one
   await ui.press({ key: 'lane-ln3-title' })
   expect(await cardsDrawn()).toEqual([])
   expect(await trunk()).toEqual(['├─', '├─', '└─'])
-  // Its hotkey is the lane's: 1 opens the first; the pane drawn again keeps it open.
-  expect((await ui.find({ key: 'lane-ln1-title' }))?.props.hotkey).toBe('1')
+  // No hotkey: a press opens it; the pane drawn again keeps it open.
+  expect((await ui.find({ key: 'lane-ln1-title' }))?.props.hotkey).toBeUndefined()
   await ui.press({ key: 'lane-ln1-title' })
   await ui.unmount()
   ui = await $.ui.mount({ ...pane(40), surface: 'terminal' })
@@ -1260,13 +1260,13 @@ test('rails carry a comet on the wire: a 2-cell thick head, a 3-cell fading trai
   await idle.unmount()
 })
 
-test('the agents title never runs past the frame: the hotkey hint gives way first', async ($, on) => {
+test('the agents title never runs past the frame, alone on its row', async ($, on) => {
   engine(on)
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `tt${++n}` }))
   await $.turn.start({ text: 'go', turnId: 'TT1' })
   for (let i = 1; i <= 12; i += 1) await $.agent.spawn(spawn('Explore', `job ${i}`))
-  for (const [cols, hint] of [[40, false], [41, false], [64, true]] as const) {
+  for (const cols of [40, 41, 64]) {
     const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
     const frame = await ui.find({ key: 'agents-frame' })
     const header = (frame?.children ?? [])[0] as { props?: { width?: number } } | undefined
@@ -1274,7 +1274,7 @@ test('the agents title never runs past the frame: the hotkey hint gives way firs
     const texts = under(header as { children?: unknown[] }).filter(t => t.type === 'Text')
     expect(texts[0]?.text).toBe('agents · 12 running · 12 total')
     expect(texts[0]?.props.wrap).toBe('truncate')
-    expect(texts.some(t => t.text === '1-9 card')).toBe(hint)
+    expect(texts.length).toBe(1)
     expect(texts.reduce((sum, t) => sum + t.text.length, 0) + (texts.length - 1) <= cols - 4).toBe(true)
     await ui.unmount()
   }
