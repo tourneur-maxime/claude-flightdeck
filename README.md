@@ -133,7 +133,6 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 | `gateLabel` | `GATE` | the permission panel's name |
 | `panels` | `main,architect,gate,agents,loops,receipt,log` | which panels show, in order |
 | `layout` | `auto` | `mini`, `compact`, `wide`, or `auto` (mini inline, wide from 110 columns docked) |
-| `maxCards` | `3` | cards side by side before swimlanes (1–6); fewer if the pane is too narrow |
 | `motion` | `while-active` | `off` keeps connectors still |
 | `moments` | `true` | show the inferred consult moments |
 | `palette` | `theme` | `pastel` uses fixed colours tuned for dark terminals |

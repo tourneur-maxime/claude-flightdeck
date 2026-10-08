@@ -67,12 +67,6 @@
       "type": "boolean",
       "default": false
     },
-    "maxCards": {
-      "title": "Cards before swimlanes",
-      "description": "Agent cards drawn side by side; more agents than this switch to swimlanes (1-6)",
-      "type": "number",
-      "default": 3
-    },
     "layout": {
       "title": "Layout",
       "description": "auto: a summary of at most 8 rows when the pane sits inline above the prompt, two columns from 110 columns when docked, one column otherwise",

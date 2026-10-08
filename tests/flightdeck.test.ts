@@ -140,13 +140,14 @@ test('consults open, close by id, and draw on a shared timeline', () => {
 
 test('config is read leniently: bad values fall back to defaults', () => {
   const d = parseConfig({})
-  expect([d.maxCards, d.layout, d.motion, d.moments, d.panels.length]).toEqual([3, 'auto', true, true, 7])
+  expect([d.layout, d.motion, d.moments, d.panels.length]).toEqual(['auto', true, true, 7])
+  expect('maxCards' in d).toBe(false) // the cards are a list now: nothing to cap side by side
   expect(d.architect.test('fable-advisor:fable-advisor')).toBe(true)
   expect([d.mascot, parseConfig({ mascot: 'off' }).mascot, parseConfig({ mascot: 'nope' }).mascot]).toEqual([true, false, true])
   expect([d.cost, parseConfig({ cost: 'on' }).cost, parseConfig({ cost: 'nope' }).cost]).toEqual([false, true, false])
   const c = parseConfig({ architectPattern: '([', maxCards: 99, layout: 'diagonal', panels: 'log, gate ,nope,gate', motion: 'off' })
   expect(c.architect.test('advisor')).toBe(true) // invalid regex → default
-  expect([c.maxCards, c.layout, c.motion]).toEqual([6, 'auto', false])
+  expect([c.layout, c.motion]).toEqual(['auto', false]) // a maxCards left in settings is ignored
   expect(c.panels).toEqual(['log', 'gate'])
 })
 

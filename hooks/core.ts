@@ -106,7 +106,6 @@ export type Config = {
   motion: boolean
   moments: boolean
   matchDescriptions: boolean
-  maxCards: number
   layout: Layout
   palette: Palette
   openOnStart: boolean
@@ -132,7 +131,6 @@ export const parseConfig = (o: Readonly<Record<string, unknown>>): Config => {
     .map(s => s.trim())
     .filter((p): p is Panel => (PANELS as readonly string[]).includes(p))
   const layout = str('layout', 'auto')
-  const max = typeof o.maxCards === 'number' ? Math.round(o.maxCards) : 3
   return {
     architect: safeRegExp(str('architectPattern', ''), 'advisor|architect'),
     architectLabel: str('architectLabel', 'ARCHITECT'),
@@ -141,7 +139,6 @@ export const parseConfig = (o: Readonly<Record<string, unknown>>): Config => {
     motion: str('motion', 'while-active') !== 'off',
     moments: bool('moments', true),
     matchDescriptions: bool('matchDescriptions', false),
-    maxCards: Math.min(6, Math.max(1, max)),
     layout: layout === 'compact' || layout === 'wide' || layout === 'mini' ? layout : 'auto',
     palette: str('palette', 'theme') === 'pastel' ? 'pastel' : 'theme',
     openOnStart: bool('openOnStart', true),
