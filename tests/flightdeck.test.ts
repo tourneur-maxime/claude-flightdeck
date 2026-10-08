@@ -28,6 +28,7 @@ import {
   logRows,
   isAtEnd,
   isFlashing,
+  shortReason,
   jsonlMessages,
   messageExcerpt,
   momentOf,
@@ -545,9 +546,9 @@ const agentWorld = (on: On, answer: (agentId: string | undefined) => unknown = (
     w.closed.push(e.id)
     return { value: undefined }
   })
-  on('session.messages', (_$, e) => {
+  on('session.messages', async (_$, e) => {
     w.reads.push(e.agentId)
-    return { value: answer(e.agentId) as never }
+    return { value: (await answer(e.agentId)) as never }
   })
   return w
 }
@@ -1540,8 +1541,30 @@ test("only the conversation's end is kept, within 400 messages and 60 000 charac
   expect(cut.entries.reduce((n, e) => n + e.text.length, 0) <= FEED_BUDGET.chars).toBe(true)
   const one = feedOf([{ role: 'user', text: 'y'.repeat(10_000), toolUses: [] }])
   expect(one.entries[0]?.text).toMatch(/… \(\+4000 chars\)$/)
-  // The newest message is kept whatever its size.
-  expect(feedOf([{ role: 'user', text: 'z'.repeat(500), toolUses: [] }], { entries: 400, chars: 10 }).entries.length).toBe(1)
+  // The newest message is kept whatever its size, cut to the budget.
+  const tiny = feedOf([{ role: 'user', text: 'z'.repeat(500), toolUses: [] }], { entries: 400, chars: 100 })
+  expect(tiny.entries.length).toBe(1)
+  expect(JSON.stringify(tiny.entries).length <= 100).toBe(true)
+})
+
+test('one message with 80 tool calls is held to the budget as stored: its earliest calls give way, counted', () => {
+  const long = (i: number) => Array.from({ length: 6 }, (_, k) => `${i}:${k} ${'r'.repeat(400)}`).join('\n')
+  const calls = Array.from({ length: 80 }, (_, i) => ({ tool: 'Bash', input: { command: `step ${i} ${'c'.repeat(400)}` }, text: long(i) }))
+  const { entries } = feedOf([
+    { role: 'user', text: 'go', toolUses: [] },
+    { role: 'assistant', text: 'many calls', toolUses: calls },
+  ])
+  expect(JSON.stringify(entries).length <= FEED_BUDGET.chars).toBe(true)
+  const last = entries.at(-1)
+  expect(last?.text).toBe('many calls')
+  expect((last?.toolsOmitted ?? 0) > 0).toBe(true)
+  expect((last?.toolsOmitted ?? 0) + (last?.tools.length ?? 0)).toBe(80)
+  expect(last?.tools.at(-1)?.text).toMatch(/^Bash → step 79 /) // the latest calls kept
+})
+
+test('a failed read is said in short: credentials masked, a path cut to its file name', () => {
+  expect(shortReason(new Error('ENOENT: no such file, open \'/Users/me/.claude/projects/-x/s1/subagents/agent-a1.jsonl\''))).toBe("ENOENT: no such file, open '…/agent-a1.jsonl'")
+  expect(shortReason('bad token=abc123def')).toBe('bad token=•••')
 })
 
 const jsonl = [
@@ -1744,4 +1767,61 @@ test('closing the agent pane drops its conversation; the session ending closes i
   await $.session.end({ reason: 'other', sessionId: 's' } as never)
   expect(world.closed).toEqual(['flightdeck-agent', 'flightdeck', 'flightdeck-agent'])
   expect((await agentShown(shown)).isEmpty).toBe(true)
+})
+
+test('events arriving together (calls and a step) arm one read; a read under way when the pane closes writes nothing', async ($, on) => {
+  let slow = false
+  let sleep: (ms: number) => Promise<void> = async () => undefined
+  const { clock, shown, world } = await agentReady(
+    $,
+    on,
+    async () => {
+      if (slow) await sleep(500)
+      return conversation
+    },
+    o => {
+      o('tool.call', () => ({ result: {}, text: 'ok' }))
+      stepper(o)
+    },
+  )
+  const reads = world.reads
+  sleep = ms => clock.sleep(ms)
+  expect(reads).toEqual(['ap1'])
+  // Three calls of the same agent at once: one read, once the window has passed.
+  await Promise.all([
+    ...['p1', 'p2', 'p3'].map(id => $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: id, agentId: 'ap1' } as never)),
+    drain($, { turnId: 'AP1', index: 0, model: 'claude-sonnet-5-5', messageCount: 2, agentId: 'ap1' }),
+  ])
+  await clock.advance(1_100)
+  expect(reads).toEqual(['ap1', 'ap1'])
+  // A read that answers late: the pane closes meanwhile, and stays closed.
+  slow = true
+  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'p4', agentId: 'ap1' } as never)
+  void clock.advance(1_100) // the read starts; its answer waits 500 ms
+  await clock.settle()
+  await $.command.run({ command: 'flightdeck', args: 'close' } as never)
+  expect((await agentShown(shown)).isEmpty).toBe(true)
+  await clock.advance(600)
+  expect(reads).toEqual(['ap1', 'ap1', 'ap1'])
+  expect((await agentShown(shown)).isEmpty).toBe(true)
+  // Closed: a later call of that agent reads nothing.
+  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'p5', agentId: 'ap1' } as never)
+  await clock.advance(2_000)
+  expect(reads.length).toBe(3)
+})
+
+test('a read that fails later says why in the pane instead of "reading…"', async ($, on) => {
+  let broken = false
+  const { clock, shown } = await agentReady(
+    $,
+    on,
+    () => (broken ? [{ role: 'assistant', text: 42, toolUses: [] }] : conversation),
+    o => o('tool.call', () => ({ result: {}, text: 'ok' })),
+  )
+  broken = true
+  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'f1', agentId: 'ap1' } as never)
+  await clock.advance(1_100)
+  const texts = (await agentShown(shown)).texts
+  expect(texts.some(t => /^transcript unavailable: /.test(t))).toBe(true)
+  expect(texts).not.toContain('reading…')
 })

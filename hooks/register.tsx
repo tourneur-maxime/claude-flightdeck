@@ -82,6 +82,7 @@ import {
   shorten,
   shortenCells,
   shortModel,
+  shortReason,
   startConsult,
   stepLoop,
   taskIdOf,
@@ -260,8 +261,6 @@ async function costNow($: EngineInterface): Promise<number | null> {
   return u?.cost?.usd ?? null
 }
 
-const reasonOf = (err: unknown) => (err instanceof Error ? err.message : String(err))
-
 /** Where the session keeps its files, for a transcript path no event has named yet. */
 async function whereabouts($: EngineInterface) {
   const [configDir, home, cwd, sessionId] = await Promise.all([
@@ -275,15 +274,15 @@ async function whereabouts($: EngineInterface) {
 
 /**
  * An agent's conversation, read in a hook (a render may not write state): from the session, else,
- * when the session no longer serves it (`{ deny }`), from its saved transcript. Never rejects: what
- * could not be read is said in `deny`.
+ * when the session no longer serves it (`{ deny }`), from its saved transcript. What could not be
+ * read is said in `deny`; whatever else fails rejects, and refreshFeed says that instead.
  */
 async function readFeed($: EngineInterface, agentId: string, where: { known: string | null; mainTranscript: string | null }): Promise<AgentFeed> {
-  const readAt = await $.clock.now()
+  const readAt = await $.clock.now().catch(() => 0)
   const empty = { agentId, entries: [], omitted: 0, readAt }
-  const got = await $.session.messages({ agentId }).catch((err: unknown) => ({ deny: reasonOf(err) }))
+  const got = await $.session.messages({ agentId }).catch((err: unknown) => ({ deny: shortReason(err) }))
   if (Array.isArray(got)) return { ...empty, ...feedOf(got), source: 'session', deny: null }
-  const denied = got.deny
+  const denied = shortReason(got.deny)
   const known = where.known || where.mainTranscript ? {} : await whereabouts($)
   const path = transcriptPath({ agentId, ...where, ...known })
   const unavailable = (why: string): AgentFeed => ({ ...empty, source: 'transcript', deny: `${denied} · ${why}` })
@@ -291,7 +290,7 @@ async function readFeed($: EngineInterface, agentId: string, where: { known: str
   const stat = await $.fs.stat(path).catch(() => null)
   if (!stat || stat.kind !== 'file') return unavailable('no saved transcript')
   if (stat.size > TRANSCRIPT_MAX_BYTES) return unavailable(`saved transcript is ${fmtBytes(stat.size)}, over the 4 MiB read limit`)
-  const text = await $.fs.read(path).catch((err: unknown) => new Error(reasonOf(err)))
+  const text = await $.fs.read(path).catch((err: unknown) => new Error(shortReason(err)))
   if (text instanceof Error) return unavailable(`saved transcript unreadable: ${text.message}`)
   return { ...empty, ...feedOf(jsonlMessages(text)), source: 'transcript', deny: null }
 }
@@ -367,63 +366,106 @@ async function noteDelivery($: EngineInterface, cfg: Config, pending: PendingMes
 // ---------------------------------------------------------------- the agent pane's bookkeeping
 
 // The module's own, gone on a reload (each is then read again). Saved transcripts by agent, as
-// SubagentStop names them; the main one, from any classic event's envelope.
+// SubagentStop names them; the main one, from the envelope of UserPromptSubmit or SubagentStop.
 const agentTranscripts = new Map<string, string>()
+
+/** A read waiting: `due` is Infinity while it is being armed; `epoch` the open it belongs to. */
+type FeedTimer = { cancel: () => void; due: number; epoch: number }
+
+/** A read past its time by this much never ran (its timer refused or lost): the next event replaces it. */
+const FEED_STALE_MS = 5_000
+
 const feedWatch: {
   mainTranscript: string | null
   /** The agent the pane follows; undefined after a reload, until the stored feed is read once. */
   agent: string | null | undefined
   lastReadAt: number
-  timer: { cancel: () => void } | null
+  timer: FeedTimer | null
+  /** Bumped by every stop (an open, a close): a read of an older epoch writes nothing. */
+  epoch: number
   /** Keep the pane at the end: true when it opens, then whatever the person's last scroll left. */
   follow: boolean
-} = { mainTranscript: null, agent: undefined, lastReadAt: 0, timer: null, follow: true }
+} = { mainTranscript: null, agent: undefined, lastReadAt: 0, timer: null, epoch: 0, follow: true }
 
 async function followedAgent($: EngineInterface): Promise<string | null> {
   if (feedWatch.agent === undefined) feedWatch.agent = (await getFeed($))?.agentId ?? null
   return feedWatch.agent
 }
 
+/** Cancels the read waiting, if any; a read already under way finds its epoch gone and writes nothing. */
 function stopFeed() {
   feedWatch.timer?.cancel()
   feedWatch.timer = null
+  feedWatch.epoch += 1
 }
 
-/** Reads the followed agent's conversation into the pane's state, then keeps the end in view. */
-async function refreshFeed($: EngineInterface, id: string) {
-  const f = await readFeed($, id, { known: agentTranscripts.get(id) ?? null, mainTranscript: feedWatch.mainTranscript })
-  feedWatch.lastReadAt = f.readAt
+/**
+ * Reads the followed agent's conversation into the pane's state, then keeps the end in view.
+ * Never rejects: a read that fails leaves the reason in the pane (`transcript unavailable: …`).
+ */
+async function refreshFeed($: EngineInterface, id: string, epoch: number) {
+  const f = await readFeed($, id, { known: agentTranscripts.get(id) ?? null, mainTranscript: feedWatch.mainTranscript }).catch(
+    (err: unknown): AgentFeed => ({ agentId: id, entries: [], omitted: 0, readAt: feedWatch.lastReadAt, source: 'session', deny: shortReason(err) }),
+  )
   // Closed, or another agent opened, while it read.
-  if (feedWatch.agent !== id) return
-  await update($, agentFeed, () => f)
-  if (feedWatch.follow) await $.ui.scroll({ in: AGENT_PANE, to: 'end' }).catch(() => undefined)
+  if (epoch !== feedWatch.epoch || feedWatch.agent !== id) return
+  if (f.readAt > 0) feedWatch.lastReadAt = f.readAt
+  const isWritten = await update($, agentFeed, () => f).then(
+    () => true,
+    () => false,
+  )
+  if (isWritten && feedWatch.follow) await $.ui.scroll({ in: AGENT_PANE, to: 'end' }).catch(() => undefined)
 }
 
 /**
  * Something happened in an agent's loop: when the pane follows it, read again, at most once a
  * FEED_DEBOUNCE_MS and never at once (the row behind the event lands first). A read already
- * waiting covers every event until it runs, the agent's last one included.
+ * waiting covers every event until it runs, the agent's last one included; its slot is taken
+ * before the first await, so events arriving together arm one read.
  */
 async function requestFeed($: EngineInterface, id: string) {
-  if ((await followedAgent($)) !== id || feedWatch.timer) return
-  const now = await $.clock.now()
-  const delay = Math.max(FEED_SETTLE_MS, feedWatch.lastReadAt + FEED_DEBOUNCE_MS - now)
-  feedWatch.timer = $.clock.after(delay, () => {
-    feedWatch.timer = null
-    void refreshFeed($, id).catch(() => undefined)
-  })
+  if (feedWatch.agent === null || (feedWatch.agent !== undefined && feedWatch.agent !== id)) return
+  const held = feedWatch.timer
+  if (held) {
+    if (held.due === Infinity) return
+    const now = await $.clock.now().catch(() => null)
+    // Still waiting in time, or replaced meanwhile: it covers this event.
+    if (now === null || feedWatch.timer !== held || now < held.due + FEED_STALE_MS) return
+    held.cancel()
+  }
+  const mine: FeedTimer = { cancel: () => undefined, due: Infinity, epoch: feedWatch.epoch }
+  feedWatch.timer = mine
+  const release = () => {
+    if (feedWatch.timer === mine) feedWatch.timer = null
+  }
+  try {
+    if ((await followedAgent($)) !== id) return release()
+    const now = await $.clock.now()
+    if (feedWatch.timer !== mine) return
+    const delay = Math.max(FEED_SETTLE_MS, feedWatch.lastReadAt + FEED_DEBOUNCE_MS - now)
+    mine.due = now + delay
+    const timer = $.clock.after(delay, () => {
+      if (feedWatch.timer !== mine) return
+      feedWatch.timer = null
+      void refreshFeed($, id, mine.epoch)
+    })
+    mine.cancel = () => timer.cancel()
+  } catch {
+    release()
+  }
 }
 
-/** A card pressed: the agent pane opens (or is retitled) on its conversation, read now. */
+/** A card pressed: the agent pane opens (or is retitled) on its conversation, read now. Never rejects. */
 async function openAgent($: EngineInterface, card: AgentCard) {
   stopFeed()
+  const epoch = feedWatch.epoch
   feedWatch.agent = card.id
   feedWatch.follow = true
   // Its title and a "reading" line at once, not the previous agent's conversation.
   const reading: AgentFeed = { agentId: card.id, entries: [], omitted: 0, readAt: 0, source: 'session', deny: null }
-  await update($, agentFeed, () => reading)
+  await update($, agentFeed, () => reading).catch(() => undefined)
   await $.ui.open({ id: AGENT_PANE, title: agentPaneTitle(cardTitle(card)), focus: true, closeOnEscape: true }).catch(() => undefined)
-  await refreshFeed($, card.id)
+  await refreshFeed($, card.id, epoch)
 }
 
 /** The agent pane closed, or the session ended: the conversation goes with it. */
@@ -1491,7 +1533,7 @@ export const register: Register = (on, options) => {
       ) : null
 
     const body =
-      feed.readAt === 0 ? (
+      feed.readAt === 0 && !feed.deny && feed.entries.length === 0 ? (
         <Text color={C.faint}>reading…</Text>
       ) : feed.entries.length === 0 ? (
         <Text color={feed.deny ? C.warn : C.faint} wrap="wrap">
@@ -1514,6 +1556,7 @@ export const register: Register = (on, options) => {
                   {m.text}
                 </Text>
               ) : null}
+              {m.toolsOmitted ? <Text color={C.faint}>{`… (+${plural(m.toolsOmitted, 'tool call')})`}</Text> : null}
               {m.tools.map((t, k) => (
                 <Box key={`feed-${i}-tool-${k}`} flexDirection="column" width={W}>
                   <Text color={t.isError ? C.warn : C.text} wrap="truncate">

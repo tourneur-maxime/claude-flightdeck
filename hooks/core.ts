@@ -938,7 +938,27 @@ const feedTool = (u: ToolUseLike): FeedTool => {
   }
 }
 
-const entrySize = (e: FeedEntry) => 20 + e.text.length + e.tools.reduce((n, t) => n + 10 + t.text.length + t.result.reduce((m, l) => m + l.length + 1, 0), 0)
+/** What an entry takes once stored: its JSON text, as `$.state` keeps it. */
+const sizeOf = (v: unknown) => JSON.stringify(v).length
+
+/**
+ * One message held to `max` stored characters: its earliest calls dropped first (counted in
+ * `toolsOmitted`), then its text cut, so even the newest message, always kept, stays bounded.
+ */
+const boundEntry = (e: FeedEntry, max: number): FeedEntry => {
+  if (sizeOf(e) <= max) return e
+  const bare = sizeOf({ ...e, tools: [], toolsOmitted: e.tools.length })
+  const sizes = e.tools.map(t => sizeOf(t) + 1)
+  let total = bare + sizes.reduce((n, s) => n + s, 0)
+  let dropped = 0
+  while (dropped < e.tools.length && total > max) total -= sizes[dropped++] as number
+  let out: FeedEntry = dropped > 0 ? { ...e, tools: e.tools.slice(dropped), toolsOmitted: dropped } : e
+  for (let i = 0; i < 8 && sizeOf(out) > max && out.text; i += 1) {
+    const keep = Math.max(0, [...out.text].length - (sizeOf(out) - max) - 40)
+    out = { ...out, text: keep > 0 ? clip(e.text, keep) : '' }
+  }
+  return out
+}
 
 /**
  * An agent's conversation as the pane draws it: each message's role, its text and its tool calls
@@ -957,8 +977,11 @@ export const feedOf = (messages: readonly MessageLike[], budget: FeedBudget = FE
   let chars = 0
   let start = all.length
   while (start > 0 && all.length - start < budget.entries) {
-    const size = entrySize(all[start - 1] as FeedEntry)
+    const entry = boundEntry(all[start - 1] as FeedEntry, budget.chars)
+    // One more for the comma between entries in the stored list.
+    const size = sizeOf(entry) + 1
     if (start < all.length && chars + size > budget.chars) break
+    all[start - 1] = entry
     chars += size
     start -= 1
   }
@@ -1054,6 +1077,10 @@ export const transcriptPath = (o: {
   if (!base || !o.cwd || !o.sessionId || !/^[A-Za-z0-9_-]+$/.test(o.sessionId)) return null
   return `${base}/projects/${o.cwd.replace(/[^A-Za-z0-9]/g, '-')}/${o.sessionId}/${file}`
 }
+
+/** Why a read failed, short enough for the pane: credentials masked, a path cut to its file name. */
+export const shortReason = (err: unknown) =>
+  shorten(redact(err instanceof Error ? err.message : String(err)).replace(/(?:[A-Za-z]:)?[\\/](?:[^\s\\/:'"]+[\\/])+([^\s\\/:'"]+)/g, '…/$1'), 160)
 
 /** A window over a tree that shows its last row: where the person left the agent pane to keep following. */
 export const isAtEnd = (w: { offset: number; bodyRows: number; contentRows: number }) => w.offset + w.bodyRows >= w.contentRows

@@ -120,7 +120,13 @@ export type FeedTool = {
 }
 
 /** One message of an agent's conversation; redacted, cut to a size. */
-export type FeedEntry = { role: 'user' | 'assistant'; text: string; tools: FeedTool[] }
+export type FeedEntry = {
+  role: 'user' | 'assistant'
+  text: string
+  tools: FeedTool[]
+  /** The message's earliest calls left out to keep it within the budget; absent when none were. */
+  toolsOmitted?: number
+}
 
 /** The conversation the agent pane shows: read in hooks (never while drawing), its end kept within a budget. */
 export type AgentFeed = {
