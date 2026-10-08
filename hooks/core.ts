@@ -43,7 +43,7 @@ export const DEFAULT_ARCHITECT: Architect = { consults: [], ids: [], seen: [], l
 const ZERO: Tally = { rule: 0, ask: 0, cleared: 0, deny: 0 }
 export const DEFAULT_GATE: Gate = { recent: [], totals: { file: ZERO, shell: ZERO, other: ZERO } }
 export const DEFAULT_TURN: Turn = { edits: 0, errorStreak: 0, errors: 0, isReviewing: false, startedAt: 0, costAtStart: null }
-export const DEFAULT_VIEW: View = { expanded: null, gateOpen: null, layout: null }
+export const DEFAULT_VIEW: View = { expanded: null, gateOpen: null, layout: null, agent: null }
 export const DEFAULT_ROSTER: Roster = { architectTypes: [] }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -895,7 +895,7 @@ export const verdictOf = (answer: string): ReviewVerdict | null => {
 
 export const elapsedOf = (c: AgentCard, now: number) => (c.endedAt ?? now) - c.spawnedAt
 
-// ---------------------------------------------------------------- the agent pane: one agent's conversation
+// ---------------------------------------------------------------- the agent view: one agent's conversation
 
 /** A tool call as `$.session.messages` reports it (ToolUseSummary), or as a saved transcript rebuilds it. */
 export type ToolUseLike = { tool: string; input?: unknown; text?: string; isError?: boolean }
@@ -1082,7 +1082,7 @@ export const transcriptPath = (o: {
 export const shortReason = (err: unknown) =>
   shorten(redact(err instanceof Error ? err.message : String(err)).replace(/(?:[A-Za-z]:)?[\\/](?:[^\s\\/:'"]+[\\/])+([^\s\\/:'"]+)/g, '…/$1'), 160)
 
-/** A window over a tree that shows its last row: where the person left the agent pane to keep following. */
+/** A window over a tree that shows its last row: where the person left the agent view to keep following. */
 export const isAtEnd = (w: { offset: number; bodyRows: number; contentRows: number }) => w.offset + w.bodyRows >= w.contentRows
 
 /** A stored feed, or null when what is stored is not one. */
@@ -1098,8 +1098,25 @@ export const normalizeFeed = (stored: unknown): AgentFeed | null => {
   }
 }
 
-/** A pane title the engine takes: no control characters, cut in cells. */
-export const agentPaneTitle = (title: string) => `Agent · ${shortenCells(title.replace(/[\u0000-\u001f\u007f]/g, ' '), 32) || 'agent'}`
+/**
+ * The agent view's heading, within `width` cells: `Agent · <task>`, then ` · <state>` (its state
+ * and model). The task gives way first; with fewer than 6 cells of it left, the state does.
+ */
+export const agentHeading = (title: string, state: string, width: number): { head: string; tail: string } => {
+  const lead = 'Agent · '
+  const task = title.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim() || 'agent'
+  const tail = ` · ${state}`
+  const room = width - cellWidth(lead) - cellWidth(tail)
+  if (room >= 6) return { head: lead + shortenCells(task, room), tail }
+  return { head: shortenCells(lead + task, width), tail: '' }
+}
+
+/** The agent before (-1) or after (1) `id` in the tree's order (agentTree), or null at an end or for an id with no card. */
+export const neighbourAgent = (cards: AgentCard[], id: string, step: -1 | 1): string | null => {
+  const order = agentTree(cards).map(row => row.card.id)
+  const i = order.indexOf(id)
+  return i < 0 ? null : (order[i + step] ?? null)
+}
 
 /** `1.5 MiB`, `512 KiB`. */
 export const fmtBytes = (n: number) => (n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)} MiB` : `${Math.max(1, Math.round(n / 1024))} KiB`)

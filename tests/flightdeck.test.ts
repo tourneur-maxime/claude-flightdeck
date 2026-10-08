@@ -7,7 +7,7 @@ import {
   DEFAULT_GATE,
   DEFAULT_TURN,
   afterCall,
-  agentPaneTitle,
+  agentHeading,
   agentTree,
   agentsRows,
   applyStep,
@@ -32,6 +32,7 @@ import {
   jsonlMessages,
   messageExcerpt,
   momentOf,
+  neighbourAgent,
   noteMessage,
   normalizeCard,
   normalizeFeed,
@@ -525,13 +526,7 @@ const spawn = (subagentType: string, description: string, parentAgentId?: string
   ...(parentAgentId ? { parentAgentId } : {}),
 })
 
-const agentPane = (bodyColumns: number) => ({
-  ...pane(bodyColumns),
-  requestId: 'flightdeck-agent',
-  props: { ...pane(bodyColumns).props, title: 'Agent', scroll: { offset: 0, bodyRows: 6 } },
-})
-
-/** The world under the agent pane, recorded: panes opened and closed, scrolls, conversations read. */
+/** The world under the agent view, recorded: panes opened and closed, conversations read. */
 const agentWorld = (on: On, answer: (agentId: string | undefined) => unknown = () => []) => {
   const w = {
     opened: [] as Record<string, unknown>[],
@@ -623,7 +618,7 @@ test('pastel keeps the fixed dark-terminal colours', { options: { palette: 'past
   await ui.unmount()
 })
 
-test('subagents become cards in a list, a card opens the agent pane on its hotkey, and the desktop adds a time axis', async ($, on) => {
+test('subagents become cards in a list, a card turns the pane to its agent, and the desktop adds a time axis', async ($, on) => {
   engine(on)
   const world = agentWorld(on)
   let n = 0
@@ -638,17 +633,19 @@ test('subagents become cards in a list, a card opens the agent pane on its hotke
   expect(await ui.find({ type: 'Svg' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /^Write the parser tests$/ })).toBeUndefined()
   await ui.press({ key: 'card-ag1' })
-  expect(world.opened.at(-1)).toEqual({ id: 'flightdeck-agent', title: 'Agent · Write the parser tests', focus: true, closeOnEscape: true })
-  expect(await ui.find({ type: 'Text', text: /^Write the parser tests$/ })).toBeUndefined() // no summary in the main pane any more
+  expect(world.opened).toEqual([]) // no second pane: this one turns to the agent
+  expect(textOf(await ui.find({ key: 'agent-heading' }))).toBe('Agent · Write the parser tests · ◐ running · sonnet')
+  expect(await ui.find({ key: 'card-ag2' })).toBeUndefined() // the cards give way to the conversation
+  // The summary, on its `i` key, in the same pane.
+  expect((await ui.find({ key: 'agent-summary' }))?.props.hotkey).toBe('i')
+  expect(await ui.find({ key: 'agent-summary-box' })).toBeUndefined()
+  await ui.press({ key: 'agent-summary' })
+  expect(await ui.find({ key: 'agent-summary-box' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^parent: main$/ })).toBeDefined()
+  await ui.press({ key: 'agent-back' })
+  expect(await ui.find({ key: 'card-ag2' })).toBeDefined()
+  expect(await ui.find({ key: 'agent-heading' })).toBeUndefined()
   await ui.unmount()
-  // The summary is the agent pane's, on its `i` key.
-  const agentUi = await $.ui.mount({ ...agentPane(64), surface: 'terminal' })
-  expect((await agentUi.find({ key: 'agent-summary' }))?.props.hotkey).toBe('i')
-  expect(await agentUi.find({ key: 'agent-summary-box' })).toBeUndefined()
-  await agentUi.press({ key: 'agent-summary' })
-  expect(await agentUi.find({ key: 'agent-summary-box' })).toBeDefined()
-  expect(await agentUi.find({ type: 'Text', text: /^parent: main$/ })).toBeDefined()
-  await agentUi.unmount()
 
   await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
   await $.agent.spawn(spawn('general-purpose', 'Review the parser'))
@@ -803,7 +800,7 @@ test("a background architect's advice is read from its hand-back", async ($, on)
   await ui.unmount()
 })
 
-test("the list draws the spawn tree: a sub-agent under its parent, any depth, its parent in the agent pane's summary", async ($, on) => {
+test("the list draws the spawn tree: a sub-agent under its parent, any depth, its parent in the agent view's summary", async ($, on) => {
   engine(on)
   agentWorld(on)
   let n = 0
@@ -825,16 +822,16 @@ test("the list draws the spawn tree: a sub-agent under its parent, any depth, it
     const titles = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => String(k).startsWith('card-'))
     expect(titles).toEqual(['card-g1', 'card-g3', 'card-g4', 'card-g2'])
     await ui.press({ key: 'card-g4' })
-    const agentUi = await $.ui.mount({ ...agentPane(cols), surface: 'terminal' })
-    if (!(await agentUi.find({ key: 'agent-summary-box' }))) await agentUi.press({ key: 'agent-summary' })
-    expect(await agentUi.find({ text: /^parent: Write parser tests$/ })).toBeDefined()
-    await ui.press({ key: 'card-g1' }) // the same pane, another agent: its summary closed until asked
-    expect(await agentUi.find({ key: 'agent-summary-box' })).toBeUndefined()
-    await agentUi.press({ key: 'agent-summary' })
-    expect(await agentUi.find({ text: /^parent: main$/ })).toBeDefined()
-    await agentUi.press({ key: 'agent-summary' }) // closes it again
-    expect(await agentUi.find({ key: 'agent-summary-box' })).toBeUndefined()
-    await agentUi.unmount()
+    if (!(await ui.find({ key: 'agent-summary-box' }))) await ui.press({ key: 'agent-summary' })
+    expect(await ui.find({ text: /^parent: Write parser tests$/ })).toBeDefined()
+    await ui.press({ key: 'agent-next' }) // the next agent in the tree's order: its summary closed until asked
+    expect(textOf(await ui.find({ key: 'agent-heading' }))).toMatch(/^Agent · Review the/)
+    expect(await ui.find({ key: 'agent-summary-box' })).toBeUndefined()
+    await ui.press({ key: 'agent-summary' })
+    expect(await ui.find({ text: /^parent: main$/ })).toBeDefined()
+    await ui.press({ key: 'agent-summary' }) // closes it again
+    expect(await ui.find({ key: 'agent-summary-box' })).toBeUndefined()
+    await ui.press({ key: 'agent-back' })
     await ui.unmount()
   }
 })
@@ -952,7 +949,8 @@ test('every card kept is drawn, none "earlier"; hotkeys 1-9, the cards after the
   expect(buttons.map(b => b.props.hotkey)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', undefined, undefined])
   expect(await ui.find({ text: /^1-9 open$/ })).toBeDefined()
   await ui.press({ key: 'card-e11' }) // still opens, by a press
-  expect(world.opened.at(-1)?.title).toBe('Agent · job 11')
+  expect(textOf(await ui.find({ key: 'agent-heading' }))).toMatch(/^Agent · job 11 · /)
+  expect(world.opened).toEqual([])
   await ui.unmount()
 })
 
@@ -1495,7 +1493,7 @@ test("a window is learnt only from a measurement: main measured on X, then a ste
   await ui.unmount()
 })
 
-// ---------------------------------------------------------------- the agent pane
+// ---------------------------------------------------------------- the agent view: its conversation
 
 const conversation = [
   { role: 'user' as const, text: 'Check the repository state', toolUses: [] },
@@ -1608,7 +1606,6 @@ test("a subagent's transcript path: the one SubagentStop named, else beside the 
   expect(transcriptPath({ agentId: '../../etc', mainTranscript: '/p/s.jsonl' })).toBeNull()
   expect(normalizeFeed({ agentId: 'a1', entries: 'x', source: 'other' })).toEqual({ agentId: 'a1', entries: [], omitted: 0, readAt: 0, source: 'session', deny: null })
   expect(normalizeFeed(null)).toBeNull()
-  expect(agentPaneTitle('Fix\nthe\tparser')).toBe('Agent · Fix the parser')
   // The person's scroll keeps the pane following only when it leaves the last row in view.
   expect(isAtEnd({ offset: 40, bodyRows: 20, contentRows: 60 })).toBe(true)
   expect(isAtEnd({ offset: 3, bodyRows: 20, contentRows: 60 })).toBe(false)
@@ -1622,35 +1619,50 @@ const agentReady = async ($: Engine, on: On, answer: (agentId: string | undefine
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'ap1' }))
   await $.turn.start({ text: 'go', turnId: 'AP1' })
   await $.agent.spawn(spawn('general-purpose', 'Audit the repository'))
-  // The agent pane on screen, as the press opens it.
-  const shown = await $.ui.mount({ ...agentPane(64), surface: 'terminal' })
-  const main = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  await main.press({ key: 'card-ap1' })
-  await main.unmount()
+  // The pane on screen; its card pressed turns it to the agent.
+  const shown = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await shown.press({ key: 'card-ap1' })
   return { clock, world, shown }
 }
 
-/** What the agent pane shows now: its title, its texts, whether no agent is open. */
-const agentShown = async (ui: { findAll: (q: { type: string }) => Promise<{ text: string }[]> }) => {
+/** What the pane shows now: the agent view's heading (empty without one), its texts, whether the dashboard is back. */
+const agentShown = async (ui: { find: (q: { key: string }) => Promise<{ children?: unknown[] } | undefined>; findAll: (q: { type: string }) => Promise<{ text: string }[]> }) => {
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
-  return { title: texts[0] ?? '', texts, isEmpty: texts.some(t => /^No agent open/.test(t)) }
+  return { title: textOf(await ui.find({ key: 'agent-heading' })), texts, isDashboard: texts.some(t => /^session log/.test(t)) }
 }
 
-test("a card's press opens the agent pane on that agent's conversation, read once", async ($, on) => {
+test("a card's press turns the pane to that agent's conversation, read once: Clawd first, then the heading and its controls", async ($, on) => {
   const { world, shown: pane0 } = await agentReady($, on)
-  expect(world.opened).toEqual([{ id: 'flightdeck-agent', title: 'Agent · Audit the repository', focus: true, closeOnEscape: true }])
+  expect(world.opened).toEqual([]) // no second pane
   expect(world.reads).toEqual(['ap1'])
   const shown = await agentShown(pane0)
-  expect(shown.title).toBe('Audit the repository')
+  expect(shown.title).toBe('Agent · Audit the repository · ◐ running · sonnet')
+  expect(shown.isDashboard).toBe(false)
+  const { first, second } = await topOf(pane0)
+  expect(((first?.children ?? []).filter(Boolean) as Tree[])[0]?.props?.key).toBe('clawd')
+  expect(second?.props?.key).toBe('agent-nav')
+  const keys = (await pane0.findAll({ type: 'Button' })).map(b => [b.key, b.props.hotkey, b.props.label])
+  expect(keys).toEqual([
+    ['agent-back', 'b', 'back'],
+    ['agent-prev', 'p', '‹ prev'],
+    ['agent-next', 'n', 'next ›'],
+    ['agent-summary', 'i', 'summary ▸'],
+  ])
   expect(shown.texts.filter(t => /^(▶ user|◆ assistant)$/.test(t))).toEqual(['▶ user', '◆ assistant'])
   expect(shown.texts.some(t => /^read \d\d:\d\d:\d\d$/.test(t))).toBe(true)
 })
 
-test('the agent pane at 40, 64 and 120 columns: role headers, a line per call within the width, results cut to 3 lines', async ($, on) => {
+test('the agent view at 40, 64 and 120 columns: the heading and its controls fit, role headers, a line per call within the width, results cut to 3 lines', async ($, on) => {
   await (await agentReady($, on)).shown.unmount()
   for (const cols of [40, 64, 120]) {
-    const ui = await $.ui.mount({ ...agentPane(cols), surface: 'terminal' })
-    expect((await ui.find({ type: 'Text', text: /^Audit the repository$/ }))?.props.color).toBe('suggestion')
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    expect((await ui.find({ type: 'Text', text: /^Agent · Audit/ }))?.props.color).toBe('suggestion')
+    expect(cellWidth(textOf(await ui.find({ key: 'agent-heading' }))) <= cols).toBe(true)
+    // Each Button draws its hotkey before its label (`b: back`), one cell between them.
+    const nav = (await ui.findAll({ type: 'Button' })).map(b => cellWidth(String(b.props.label)) + 3)
+    expect(nav.length).toBe(4)
+    expect(nav.reduce((x, y) => x + y, 0) + nav.length - 1 <= cols).toBe(true)
+    expect(await ui.find({ key: 'clawd' })).toBeDefined()
     const user = await ui.find({ type: 'Text', text: /^▶ user$/ })
     const assistant = await ui.find({ type: 'Text', text: /^◆ assistant$/ })
     expect([user?.props.color, assistant?.props.color]).toEqual(['inactive', 'suggestion'])
@@ -1691,11 +1703,9 @@ test("an ended agent the session no longer serves is read from its saved transcr
   await $.turn.start({ text: 'go', turnId: 'AP1' })
   await $.agent.spawn(spawn('general-purpose', 'Audit the repository'))
   await $.classic.SubagentStop({ stop_hook_active: false, agent_id: 'ap1', agent_type: 'general-purpose', agent_transcript_path: '/t/s/subagents/agent-ap1.jsonl', transcript_path: '/t/s.jsonl' })
-  const main = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  await main.press({ key: 'card-ap1' })
-  await main.unmount()
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await ui.press({ key: 'card-ap1' })
   expect(reads).toEqual(['/t/s/subagents/agent-ap1.jsonl'])
-  const ui = await $.ui.mount({ ...agentPane(64), surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /^read \d\d:\d\d:\d\d · from the saved transcript$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^✗ Read → repo\/x\.ts$/ })).toBeDefined()
   expect(await ui.find({ text: /hunter2/ })).toBeUndefined()
@@ -1703,7 +1713,7 @@ test("an ended agent the session no longer serves is read from its saved transcr
   void clock
 })
 
-test('no conversation and no transcript to read: the pane says why', async ($, on) => {
+test('no conversation and no transcript to read: the agent view says why', async ($, on) => {
   on('fs.stat', () => ({ value: { kind: 'file' as const, size: 6 * 1024 * 1024, mtimeMs: 0, isLink: false } }))
   on('env.get', () => ({ value: undefined }))
   on('session.cwd', () => ({ value: '/w' }))
@@ -1712,14 +1722,11 @@ test('no conversation and no transcript to read: the pane says why', async ($, o
   const { shown: ui } = await agentReady($, on, () => ({ deny: 'agent ap1 is not readable' }))
   // No transcript path known (no SubagentStop, no envelope, no HOME): said as such.
   expect(await ui.find({ type: 'Text', text: /^transcript unavailable: agent ap1 is not readable · no transcript path known$/ })).toBeDefined()
-  await ui.unmount()
   // Once the main transcript is known, a file over 4 MiB is not read.
   await $.classic.UserPromptSubmit({ prompt: 'x', transcript_path: '/t/s.jsonl' } as never)
-  const big = await $.ui.mount({ ...agentPane(64), surface: 'terminal' })
-  await $.ui.mount({ ...pane(64), surface: 'terminal' }).then(async m => {
-    await m.press({ key: 'card-ap1' })
-    await m.unmount()
-  })
+  await ui.press({ key: 'agent-back' })
+  await ui.press({ key: 'card-ap1' })
+  const big = ui
   expect(await big.find({ type: 'Text', text: /saved transcript is 6\.0 MiB, over the 4 MiB read limit$/ })).toBeDefined()
   expect((await big.find({ type: 'Text', text: /^transcript unavailable/ }))?.props.color).toBe('error')
   await big.unmount()
@@ -1754,19 +1761,18 @@ test("while the agent runs, its steps and calls read the conversation again, at 
   expect((await agentShown(shown)).texts).toContain('step 1')
 })
 
-test('closing the agent pane drops its conversation; the session ending closes it', async ($, on) => {
+test('closing the pane leaves the agent view and drops its conversation; so does the session ending', async ($, on) => {
   const { world, shown } = await agentReady($, on, () => conversation, o => o('session.end', (_$, e) => ({ sessionId: e.sessionId })))
-  expect((await agentShown(shown)).title).toBe('Audit the repository')
-  await $.command.run({ command: 'flightdeck', args: 'close' } as never) // closes both panes
-  expect(world.closed).toEqual(['flightdeck-agent', 'flightdeck'])
-  expect((await agentShown(shown)).isEmpty).toBe(true)
-  // Opened again, then the session ends.
-  const main = await $.ui.mount({ ...pane(64), surface: 'terminal' })
-  await main.press({ key: 'card-ap1' })
-  await main.unmount()
+  expect((await agentShown(shown)).title).toMatch(/^Agent · Audit the repository/)
+  await $.command.run({ command: 'flightdeck', args: 'close' } as never) // one pane to close
+  expect(world.closed).toEqual(['flightdeck'])
+  expect((await agentShown(shown)).isDashboard).toBe(true)
+  // Opened again, then the session ends: nothing else to close, the dashboard back.
+  await shown.press({ key: 'card-ap1' })
+  expect((await agentShown(shown)).isDashboard).toBe(false)
   await $.session.end({ reason: 'other', sessionId: 's' } as never)
-  expect(world.closed).toEqual(['flightdeck-agent', 'flightdeck', 'flightdeck-agent'])
-  expect((await agentShown(shown)).isEmpty).toBe(true)
+  expect(world.closed).toEqual(['flightdeck'])
+  expect((await agentShown(shown)).isDashboard).toBe(true)
 })
 
 test('events arriving together (calls and a step) arm one read; a read under way when the pane closes writes nothing', async ($, on) => {
@@ -1800,10 +1806,10 @@ test('events arriving together (calls and a step) arm one read; a read under way
   void clock.advance(1_100) // the read starts; its answer waits 500 ms
   await clock.settle()
   await $.command.run({ command: 'flightdeck', args: 'close' } as never)
-  expect((await agentShown(shown)).isEmpty).toBe(true)
+  expect((await agentShown(shown)).isDashboard).toBe(true)
   await clock.advance(600)
   expect(reads).toEqual(['ap1', 'ap1', 'ap1'])
-  expect((await agentShown(shown)).isEmpty).toBe(true)
+  expect((await agentShown(shown)).isDashboard).toBe(true)
   // Closed: a later call of that agent reads nothing.
   await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'p5', agentId: 'ap1' } as never)
   await clock.advance(2_000)
@@ -1824,4 +1830,117 @@ test('a read that fails later says why in the pane instead of "reading…"', asy
   const texts = (await agentShown(shown)).texts
   expect(texts.some(t => /^transcript unavailable: /.test(t))).toBe(true)
   expect(texts).not.toContain('reading…')
+})
+
+// ---------------------------------------------------------------- the agent view
+
+test("the agent view's heading fits its width, the title giving way first; prev and next follow the tree's order", () => {
+  expect(agentHeading('Fix\nthe\tparser', '◐ running · opus', 64)).toEqual({ head: 'Agent · Fix the parser', tail: ' · ◐ running · opus' })
+  expect(agentHeading('Audit every module of the repository', '◐ running · sonnet', 40)).toEqual({ head: 'Agent · Audit ever…', tail: ' · ◐ running · sonnet' })
+  // Too narrow for 6 cells of the title beside the state: the state gives way.
+  expect(agentHeading('Audit every module of the repository', '◐ running · sonnet', 30)).toEqual({ head: 'Agent · Audit every module of…', tail: '' })
+  expect(agentHeading('', '✓ done · haiku', 40).head).toBe('Agent · agent')
+  for (const w of [12, 20, 30, 40, 64, 120]) {
+    const h = agentHeading('監査 every module of the repository 🚀 for dead code', '◐ running · sonnet', w)
+    expect(cellWidth(h.head + h.tail) <= w).toBe(true)
+  }
+  // The tree's order: a, its child c, then b.
+  const cards = [normalizeCard({ id: 'a' }), normalizeCard({ id: 'b' }), normalizeCard({ id: 'c', parentId: 'a' })]
+  expect(['a', 'c', 'b'].map(id => [neighbourAgent(cards, id, -1), neighbourAgent(cards, id, 1)])).toEqual([
+    [null, 'c'],
+    ['a', 'b'],
+    ['c', null],
+  ])
+  expect(neighbourAgent(cards, 'gone', 1)).toBeNull()
+})
+
+test('b goes back: the dashboard drawn again, the conversation dropped, no more reads', async ($, on) => {
+  const { clock, world, shown } = await agentReady($, on, () => conversation, o => o('tool.call', () => ({ result: {}, text: 'ok' })))
+  expect((await shown.find({ key: 'agent-back' }))?.props.hotkey).toBe('b')
+  await shown.press({ key: 'agent-back' })
+  const after = await agentShown(shown)
+  expect(after.isDashboard).toBe(true)
+  expect(after.title).toBe('')
+  expect(await shown.find({ key: 'card-ap1' })).toBeDefined()
+  // The conversation dropped: a later call of that agent reads nothing.
+  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'bk1', agentId: 'ap1' } as never)
+  await clock.advance(2_000)
+  expect(world.reads).toEqual(['ap1'])
+  // Its card pressed again: read again.
+  await shown.press({ key: 'card-ap1' })
+  expect(world.reads).toEqual(['ap1', 'ap1'])
+  expect((await agentShown(shown)).isDashboard).toBe(false)
+})
+
+test('prev and next walk the agents in the tree order, reading each, dim at the ends; the cards are not drawn meanwhile', async ($, on) => {
+  engine(on, 50_000)
+  const world = agentWorld(on, () => conversation)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `pn${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'PN1' })
+  await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
+  await $.agent.spawn(spawn('Explore', 'Review the docs'))
+  await $.agent.spawn(spawn('general-purpose', 'Write parser tests', 'pn1'))
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await ui.press({ key: 'card-pn1' })
+  expect((await ui.find({ key: 'agent-prev' }))?.props.dimColor).toBe(true)
+  expect((await ui.find({ key: 'agent-next' }))?.props.dimColor).toBe(false)
+  await ui.press({ key: 'agent-prev' }) // the first: nothing before it
+  expect(world.reads).toEqual(['pn1'])
+  await ui.press({ key: 'agent-next' }) // its sub-agent comes next
+  expect((await agentShown(ui)).title).toMatch(/^Agent · Write parser tests · /)
+  await ui.press({ key: 'agent-next' })
+  expect((await agentShown(ui)).title).toBe('Agent · Review the docs · ◐ running · sonnet')
+  expect((await ui.find({ key: 'agent-next' }))?.props.dimColor).toBe(true)
+  await ui.press({ key: 'agent-next' }) // the last: nothing after it
+  await ui.press({ key: 'agent-prev' })
+  expect((await agentShown(ui)).title).toMatch(/^Agent · Write parser tests · /)
+  expect(world.reads).toEqual(['pn1', 'pn3', 'pn2', 'pn3'])
+  expect(await ui.find({ key: 'card-pn1' })).toBeUndefined()
+  expect(world.opened).toEqual([])
+  await ui.unmount()
+})
+
+test('an agent whose card is evicted takes the pane back to the dashboard, and its reads stop', async ($, on) => {
+  const clock = engine(on, 50_000)
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  const world = agentWorld(on, () => conversation)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `ev${++n}` }))
+  await $.turn.start({ text: 'go', turnId: 'EV1' })
+  await $.agent.spawn(spawn('general-purpose', 'The first job'))
+  const ui = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  await ui.press({ key: 'card-ev1' })
+  expect((await agentShown(ui)).title).toMatch(/^Agent · The first job/)
+  for (let i = 2; i <= 25; i += 1) await $.agent.spawn(spawn('Explore', `job ${i}`))
+  const after = await agentShown(ui)
+  expect(after.isDashboard).toBe(true)
+  expect(after.title).toBe('')
+  expect(await ui.find({ key: 'card-ev1' })).toBeUndefined()
+  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'ev-c1', agentId: 'ev1' } as never)
+  await clock.advance(2_000)
+  expect(world.reads).toEqual(['ev1'])
+  await ui.unmount()
+})
+
+test('inline (mini) the pane stays the summary with an agent in view; docked, the agent view is still there', async ($, on) => {
+  const { shown } = await agentReady($, on)
+  await shown.unmount()
+  const mini = await $.ui.mount({ ...pane(80), props: { ...pane(80).props, placement: 'inline' as const }, surface: 'terminal' })
+  expect(await mini.find({ key: 'agent-back' })).toBeUndefined()
+  expect(await mini.find({ key: 'agent-heading' })).toBeUndefined()
+  expect(await mini.find({ type: 'Text', text: /^Audit the repository$/ })).toBeDefined() // its row in the summary
+  await mini.unmount()
+  const docked = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect((await agentShown(docked)).title).toMatch(/^Agent · Audit the repository/)
+  await docked.unmount()
+})
+
+test('/flightdeck reset leaves the agent view too: the dashboard back, no read of that agent after it', async ($, on) => {
+  const { clock, world, shown } = await agentReady($, on, () => conversation, o => o('tool.call', () => ({ result: {}, text: 'ok' })))
+  await $.command.run({ command: 'flightdeck', args: 'reset' } as never)
+  expect((await agentShown(shown)).isDashboard).toBe(true)
+  await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'rs1', agentId: 'ap1' } as never)
+  await clock.advance(2_000)
+  expect(world.reads).toEqual(['ap1'])
 })

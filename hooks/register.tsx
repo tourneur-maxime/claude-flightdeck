@@ -15,7 +15,7 @@ import {
   SCHEMA_VERSION,
   TRANSCRIPT_MAX_BYTES,
   afterCall,
-  agentPaneTitle,
+  agentHeading,
   agentTree,
   agentsRows,
   applyStep,
@@ -55,6 +55,7 @@ import {
   MAX_CARDS,
   messageExcerpt,
   momentOf,
+  neighbourAgent,
   normalize,
   normalizeCard,
   normalizeFeed,
@@ -96,8 +97,6 @@ import type { ClawdSpan, Config, Panel, PendingMessage } from './core'
 const PANE = 'flightdeck'
 const TITLE = 'Flightdeck'
 const PANE_COLUMNS = 66
-/** The second pane: one agent's whole conversation, opened from its card. */
-const AGENT_PANE = 'flightdeck-agent'
 /** A read waits this long after the event that asked for it, so the row behind it is stored. */
 const FEED_SETTLE_MS = 100
 
@@ -148,7 +147,8 @@ async function getTurn($: EngineInterface): Promise<Turn> {
   return normalize(DEFAULT_TURN, await read($, turn))
 }
 async function getView($: EngineInterface): Promise<View> {
-  return normalize(DEFAULT_VIEW, await read($, view))
+  const v = normalize(DEFAULT_VIEW, await read($, view))
+  return { ...v, agent: typeof v.agent === 'string' && v.agent ? v.agent : null }
 }
 async function getRoster($: EngineInterface): Promise<Roster> {
   const r = normalize(DEFAULT_ROSTER, await read($, roster))
@@ -241,6 +241,9 @@ async function openPane($: EngineInterface) {
 }
 
 async function resetAll($: EngineInterface) {
+  // The agent in view goes too: no read of its conversation after this.
+  stopFeed()
+  feedWatch.agent = null
   await update($, main, m => ({ ...DEFAULT_MAIN, model: normalize(DEFAULT_MAIN, m).model, mode: normalize(DEFAULT_MAIN, m).mode }))
   await update($, architect, () => DEFAULT_ARCHITECT)
   await update($, gate, () => DEFAULT_GATE)
@@ -363,7 +366,7 @@ async function noteDelivery($: EngineInterface, cfg: Config, pending: PendingMes
   await refreshStatus($, cfg)
 }
 
-// ---------------------------------------------------------------- the agent pane's bookkeeping
+// ---------------------------------------------------------------- the agent view's bookkeeping
 
 // The module's own, gone on a reload (each is then read again). Saved transcripts by agent, as
 // SubagentStop names them; the main one, from the envelope of UserPromptSubmit or SubagentStop.
@@ -377,13 +380,13 @@ const FEED_STALE_MS = 5_000
 
 const feedWatch: {
   mainTranscript: string | null
-  /** The agent the pane follows; undefined after a reload, until the stored feed is read once. */
+  /** The agent in view; undefined after a reload, until the stored feed is read once. */
   agent: string | null | undefined
   lastReadAt: number
   timer: FeedTimer | null
   /** Bumped by every stop (an open, a close): a read of an older epoch writes nothing. */
   epoch: number
-  /** Keep the pane at the end: true when it opens, then whatever the person's last scroll left. */
+  /** Keep the pane at the end: true when an agent comes into view, then whatever the person's last scroll left. */
   follow: boolean
 } = { mainTranscript: null, agent: undefined, lastReadAt: 0, timer: null, epoch: 0, follow: true }
 
@@ -407,18 +410,18 @@ async function refreshFeed($: EngineInterface, id: string, epoch: number) {
   const f = await readFeed($, id, { known: agentTranscripts.get(id) ?? null, mainTranscript: feedWatch.mainTranscript }).catch(
     (err: unknown): AgentFeed => ({ agentId: id, entries: [], omitted: 0, readAt: feedWatch.lastReadAt, source: 'session', deny: shortReason(err) }),
   )
-  // Closed, or another agent opened, while it read.
+  // Back to the dashboard, or another agent in view, while it read.
   if (epoch !== feedWatch.epoch || feedWatch.agent !== id) return
   if (f.readAt > 0) feedWatch.lastReadAt = f.readAt
   const isWritten = await update($, agentFeed, () => f).then(
     () => true,
     () => false,
   )
-  if (isWritten && feedWatch.follow) await $.ui.scroll({ in: AGENT_PANE, to: 'end' }).catch(() => undefined)
+  if (isWritten && feedWatch.follow) await $.ui.scroll({ in: PANE, to: 'end' }).catch(() => undefined)
 }
 
 /**
- * Something happened in an agent's loop: when the pane follows it, read again, at most once a
+ * Something happened in an agent's loop: when it is in view, read again, at most once a
  * FEED_DEBOUNCE_MS and never at once (the row behind the event lands first). A read already
  * waiting covers every event until it runs, the agent's last one included; its slot is taken
  * before the first await, so events arriving together arm one read.
@@ -455,24 +458,33 @@ async function requestFeed($: EngineInterface, id: string) {
   }
 }
 
-/** A card pressed: the agent pane opens (or is retitled) on its conversation, read now. Never rejects. */
+/**
+ * A card pressed (or prev, next): the pane turns to that agent's conversation, read now. No second
+ * pane: one opened beside Flightdeck stays behind it, as a pressed Button's pane keeps the focus
+ * an `open({ focus })` asks for. Never rejects.
+ */
 async function openAgent($: EngineInterface, card: AgentCard) {
   stopFeed()
   const epoch = feedWatch.epoch
   feedWatch.agent = card.id
   feedWatch.follow = true
-  // Its title and a "reading" line at once, not the previous agent's conversation.
+  // Its heading and a "reading" line at once, not the previous agent's conversation.
   const reading: AgentFeed = { agentId: card.id, entries: [], omitted: 0, readAt: 0, source: 'session', deny: null }
   await update($, agentFeed, () => reading).catch(() => undefined)
-  await $.ui.open({ id: AGENT_PANE, title: agentPaneTitle(cardTitle(card)), focus: true, closeOnEscape: true }).catch(() => undefined)
+  await update($, view, v => ({ ...normalize(DEFAULT_VIEW, v), agent: card.id })).catch(() => undefined)
   await refreshFeed($, card.id, epoch)
 }
 
-/** The agent pane closed, or the session ended: the conversation goes with it. */
-async function dropFeed($: EngineInterface) {
+/**
+ * Back to the dashboard (b, an evicted card, the pane closed, the session ended): the conversation
+ * goes, and no read of it runs after this. `toTop` brings the dashboard's top back into view.
+ */
+async function closeAgentView($: EngineInterface, toTop = false) {
   stopFeed()
   feedWatch.agent = null
+  await update($, view, v => ({ ...normalize(DEFAULT_VIEW, v), agent: null }))
   await update($, agentFeed, () => null)
+  if (toTop) await $.ui.scroll({ in: PANE, to: 'start' }).catch(() => undefined)
 }
 
 // ---------------------------------------------------------------- hooks
@@ -512,11 +524,7 @@ export const register: Register = (on, options) => {
   })
 
   on('session.end', async ($, e, next) => {
-    if (await followedAgent($).catch(() => null)) {
-      stopFeed()
-      await $.ui.close({ id: AGENT_PANE }).catch(() => undefined)
-      await dropFeed($)
-    }
+    if (await followedAgent($).catch(() => null)) await closeAgentView($).catch(() => undefined)
     if (e.reason === 'clear') {
       await resetAll($)
       await refreshStatus($, cfg)
@@ -527,7 +535,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'flightdeck' }, async ($, e) => {
     const [verb = 'open', arg = ''] = e.args.trim().split(/\s+/)
     if (verb === 'close') {
-      await $.ui.close({ id: AGENT_PANE }).catch(() => undefined)
+      await closeAgentView($).catch(() => undefined)
       await $.ui.close({ id: PANE })
       return { text: 'Flightdeck closed.' }
     }
@@ -545,7 +553,7 @@ export const register: Register = (on, options) => {
     }
     const opened = await openPane($)
     if (!opened.isPlaced) return { text: `Flightdeck is not shown yet: ${opened.reason}` }
-    return { text: "Flightdeck opened. Focus it with ctrl+x tab; 1-9 open an agent's conversation, f/s/o open the gate rows." }
+    return { text: "Flightdeck opened. Focus it with ctrl+x tab; 1-9 show an agent's conversation (b back), f/s/o open the gate rows." }
   })
 
   on('classic.UserPromptSubmit', async ($, e, next) => {
@@ -554,7 +562,7 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Watch only: where an agent's transcript was saved, for the agent pane once the session no
+  // Watch only: where an agent's transcript was saved, for the agent view once the session no
   // longer serves its conversation.
   on('classic.SubagentStop', async ($, e, next) => {
     if (e.agent_id && e.agent_transcript_path) agentTranscripts.set(e.agent_id, e.agent_transcript_path)
@@ -562,17 +570,18 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // The agent pane closed (Escape, its close mark, a command): the conversation goes with it.
-  on('ui.close', { id: AGENT_PANE }, async ($, e, next) => {
+  // Watch only: the pane closed (its close mark, a command): an agent in view goes with it, and
+  // the pane opens again on the dashboard.
+  on('ui.close', { id: PANE }, async ($, e, next) => {
     const closed = await next(e)
-    await dropFeed($)
+    if (await followedAgent($).catch(() => null)) await closeAgentView($).catch(() => undefined)
     return closed
   })
 
-  // Watch only: the person scrolling the agent pane decides whether it keeps following the end.
-  on('ui.scroll', { requestId: AGENT_PANE }, async ($, e, next) => {
+  // Watch only: in the agent view, the person's scroll decides whether it keeps following the end.
+  on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
     const moved = await next(e)
-    if (e.origin.kind === 'person' && moved.deny === undefined) feedWatch.follow = isAtEnd(e)
+    if (e.origin.kind === 'person' && moved.deny === undefined && feedWatch.agent) feedWatch.follow = isAtEnd(e)
     return moved
   })
 
@@ -795,6 +804,9 @@ export const register: Register = (on, options) => {
       spawnedAt: await $.clock.now(),
     }
     await update($, agents, list => [...listOf<unknown>(list).map(normalizeCard), card].slice(-MAX_CARDS))
+    // The agent in view lost its card to this one: back to the dashboard.
+    const inView = (await getView($)).agent
+    if (inView && !(await getCards($)).some(c => c.id === inView)) await closeAgentView($, true).catch(() => undefined)
     await update($, loops, l => listOf<Loop>(l).filter(x => x.id !== id))
     await say($, shorten(cardTitle(card), 12), `spawned · ${card.type}`, 'info', id)
     await refreshStatus($, cfg)
@@ -805,7 +817,7 @@ export const register: Register = (on, options) => {
     const done = await next(e)
     const id = e.agentId
     const now = await $.clock.now()
-    // The agent pane reads its conversation one last time.
+    // The agent view reads its conversation one last time.
     if (id) await requestFeed($, id).catch(() => undefined)
     if (!id) {
       const [t, cards, cost] = await Promise.all([getTurn($), getCards($), costNow($)])
@@ -853,7 +865,7 @@ export const register: Register = (on, options) => {
     // Only the terminal and the desktop draw a Client; elsewhere the table may still carry the
     // name, but what it draws is an empty box: those surfaces get the still drawing instead.
     const hasClient = (e.surface === 'terminal' || e.surface === 'desktop') && 'Client' in els
-    const [m, u, a, g, cards, lp, lines, t, r, v, now, wins] = await Promise.all([
+    const [m, u, a, g, cards, lp, lines, t, r, v, now, wins, feed] = await Promise.all([
       getMain($),
       getUsage($),
       getArchitect($),
@@ -866,6 +878,7 @@ export const register: Register = (on, options) => {
       getView($),
       $.clock.now(),
       getWindows($),
+      getFeed($),
     ])
     const W = Math.max(40, e.props.bodyColumns)
     const layout = v.layout ?? cfg.layout
@@ -1074,7 +1087,7 @@ export const register: Register = (on, options) => {
     const verdictColors: Record<ReviewVerdict, string> = { BLOQUANT: C.warn, MINEUR: C.amber, OK: C.gate }
     const statusColor = (c: AgentCard) => (c.status === 'failed' ? C.warn : c.status === 'done' ? C.gate : C.agent)
     const glyph = (c: AgentCard) => (c.status === 'running' ? '◐' : c.status === 'done' ? '✓' : c.status === 'failed' ? '✗' : '■')
-    // A card's title opens the agent pane on its conversation (one pane, retitled per agent).
+    // A card's title turns the pane to its agent's conversation.
     const openOnPress = (c: AgentCard) => () => openAgent($, c)
 
     const agentsPanel = (w: number) => {
@@ -1430,6 +1443,134 @@ export const register: Register = (on, options) => {
       </Box>
     ) : null
 
+    // ---- the agent view: one agent's conversation in place of the dashboard, read by the hooks
+    // (a render may not write state). Never in the mini summary; a card gone (evicted) leaves it.
+    const agentView = (card: AgentCard) => {
+      const f = feed?.agentId === card.id ? feed : null
+      const isSummary = v.expanded === card.id
+      const label = isSummary ? 'summary ▾' : 'summary ▸'
+      const stateColor = statusColor(card)
+      const heading = agentHeading(cardTitle(card), `${glyph(card)} ${card.status} · ${shortModel(card.model)}`, W)
+      const hasPrev = neighbourAgent(cards, card.id, -1) !== null
+      const hasNext = neighbourAgent(cards, card.id, 1) !== null
+      // Read again at the press: the list may have changed since this drawing.
+      const step = (dir: -1 | 1) => async () => {
+        const fresh = await getCards($)
+        const id = neighbourAgent(fresh, card.id, dir)
+        const to = id ? fresh.find(c => c.id === id) : undefined
+        if (to) await openAgent($, to)
+      }
+      const toggleSummary = () =>
+        update($, view, x => {
+          const y = normalize(DEFAULT_VIEW, x)
+          return { ...y, expanded: y.expanded === card.id ? null : card.id }
+        })
+
+      // The card's summary (the `i` key): its task in full, parent, latest calls, the start of its report.
+      const summary = isSummary ? (
+        <Box key="agent-summary-box" flexDirection="column" borderStyle="single" borderColor={C.agent} paddingX={1} width={W}>
+          <Text bold wrap="wrap">
+            {card.description || card.type}
+          </Text>
+          <Text dimColor wrap="truncate">{`${card.type} · ${prettyModel(card.model)} · ${card.status} · ${plural(card.steps, 'step')}`}</Text>
+          <Text dimColor wrap="truncate">{`parent: ${shorten(parentLabel(card, cards, a.ids, cfg.architectLabel.toLowerCase()), Math.max(10, W - 12))}`}</Text>
+          {card.tools.length === 0 ? <Text color={C.faint}>no tool calls yet</Text> : null}
+          {card.tools.map(n => (
+            <Text color={n.isError ? C.warn : C.text} wrap="truncate">
+              {`${n.isError ? '✗' : '·'} ${n.text}`}
+            </Text>
+          ))}
+          {card.answer ? (
+            <Text dimColor wrap="wrap">
+              {`» ${shorten(card.answer, 240)}`}
+            </Text>
+          ) : null}
+        </Box>
+      ) : null
+
+      const conversation =
+        !f || (f.readAt === 0 && !f.deny && f.entries.length === 0) ? (
+          <Text color={C.faint}>reading…</Text>
+        ) : f.entries.length === 0 ? (
+          <Text color={f.deny ? C.warn : C.faint} wrap="wrap">
+            {f.deny ? `transcript unavailable: ${f.deny}` : 'no messages yet'}
+          </Text>
+        ) : (
+          <Box flexDirection="column" width={W}>
+            {f.omitted > 0 ? <Text color={C.faint}>{`… ${plural(f.omitted, 'earlier message')}`}</Text> : null}
+            {f.entries.map((msg, i) => (
+              <Box key={`feed-${i}`} flexDirection="column" width={W}>
+                {msg.role === 'assistant' ? (
+                  <Text color={C.agent} bold>
+                    ◆ assistant
+                  </Text>
+                ) : (
+                  <Text color={C.dim}>▶ user</Text>
+                )}
+                {msg.text ? (
+                  <Text color={msg.role === 'user' ? C.dim : C.text} wrap="wrap">
+                    {msg.text}
+                  </Text>
+                ) : null}
+                {msg.toolsOmitted ? <Text color={C.faint}>{`… (+${plural(msg.toolsOmitted, 'tool call')})`}</Text> : null}
+                {msg.tools.map((tool, k) => (
+                  <Box key={`feed-${i}-tool-${k}`} flexDirection="column" width={W}>
+                    <Text color={tool.isError ? C.warn : C.text} wrap="truncate">
+                      {shortenCells(`${tool.isError ? '✗' : '⚒'} ${tool.text}`, W)}
+                    </Text>
+                    {tool.result.map(l => (
+                      <Text color={tool.isError ? C.warn : C.dim} wrap="truncate">
+                        {`  ${shortenCells(l, W - 2)}`}
+                      </Text>
+                    ))}
+                    {tool.more > 0 ? <Text color={C.faint}>{`  ${shortenCells(`… (+${plural(tool.more, 'line')})`, W - 2)}`}</Text> : null}
+                    {tool.isPending ? <Text color={C.faint}>  …</Text> : null}
+                  </Box>
+                ))}
+              </Box>
+            ))}
+          </Box>
+        )
+
+      // Clawd first, as on the dashboard; then the controls (each Button draws its hotkey before
+      // its label: `b: back`, 3 cells more), the heading, the summary and the conversation.
+      return (
+        <Box flexDirection="column" width={W}>
+          {mascot}
+          <Box key="agent-nav" width={W} justifyContent="space-between">
+            <Box columnGap={1} flexShrink={0}>
+              <Button key="agent-back" plain hotkey="b" label="back" onPress={() => closeAgentView($, true)} />
+              <Button key="agent-prev" plain hotkey="p" label="‹ prev" dimColor={!hasPrev} onPress={step(-1)} />
+              <Button key="agent-next" plain hotkey="n" label="next ›" dimColor={!hasNext} onPress={step(1)} />
+            </Box>
+            <Box flexShrink={0} marginLeft={1}>
+              <Button key="agent-summary" plain hotkey="i" label={label} onPress={toggleSummary} />
+            </Box>
+          </Box>
+          <Box key="agent-heading" width={W} height={1} overflow="hidden">
+            <Text color={C.agent} bold wrap="truncate">
+              {heading.head}
+            </Text>
+            {heading.tail ? (
+              <Box flexShrink={0}>
+                <Text color={stateColor}>{heading.tail}</Text>
+              </Box>
+            ) : null}
+          </Box>
+          {summary}
+          <Text color={C.faint}>{'─'.repeat(W)}</Text>
+          {conversation}
+          {f && f.readAt > 0 && (f.entries.length > 0 || !f.deny) ? (
+            <Text color={C.faint} wrap="truncate">
+              {`read ${fmtClock(f.readAt)}${f.source === 'transcript' ? ' · from the saved transcript' : ''}`}
+            </Text>
+          ) : null}
+        </Box>
+      )
+    }
+    const inView = v.agent ? cards.find(c => c.id === v.agent) : undefined
+    if (inView) return agentView(inView)
+
     const legend = fitLegend(
       [
         { label: 'main', color: C.main },
@@ -1474,135 +1615,6 @@ export const register: Register = (on, options) => {
         </Box>
         {body}
         {svgTimeline}
-      </Box>
-    )
-  })
-
-  // ---------------------------------------------------------------- the agent pane
-
-  // One agent's conversation, as the hooks last read it (never read here: a render may not write
-  // state, and it runs up to 30 times a second). The pane scrolls natively; nothing is estimated.
-  on('ui.render', { component: 'Pane', requestId: AGENT_PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
-    const [feed, cards, v, a] = await Promise.all([getFeed($), getCards($), getView($), getArchitect($)])
-    const W = Math.max(20, e.props.bodyColumns)
-    if (!feed) {
-      return (
-        <Box flexDirection="column" width={W}>
-          <Text color={C.faint} wrap="wrap">
-            No agent open: press a card's title in Flightdeck, or its hotkey (1-9).
-          </Text>
-        </Box>
-      )
-    }
-    const card = cards.find(c => c.id === feed.agentId)
-    const glyph = card ? (card.status === 'running' ? '◐' : card.status === 'done' ? '✓' : card.status === 'failed' ? '✗' : '■') : '·'
-    const stateColor = card?.status === 'failed' ? C.warn : card?.status === 'done' ? C.gate : C.agent
-    const isSummary = Boolean(card) && v.expanded === feed.agentId
-    const label = isSummary ? 'summary ▾' : 'summary ▸'
-    // The Button draws its hotkey beside its label: 3 cells kept for it.
-    const buttonW = cellWidth(label) + 3
-    const kind = card ? `${glyph} ${card.status} · ${card.type} · ${shortModel(card.model)} · ${plural(card.steps, 'step')}` : `${glyph} ${feed.agentId}`
-    const toggleSummary = () =>
-      update($, view, x => {
-        const y = normalize(DEFAULT_VIEW, x)
-        return { ...y, expanded: y.expanded === feed.agentId ? null : feed.agentId }
-      })
-
-    // The card's summary (the `i` key): its task in full, parent, latest calls, the start of its report.
-    const summary =
-      card && isSummary ? (
-        <Box key="agent-summary-box" flexDirection="column" borderStyle="single" borderColor={C.agent} paddingX={1} width={W}>
-          <Text bold wrap="wrap">
-            {card.description || card.type}
-          </Text>
-          <Text dimColor wrap="truncate">{`${card.type} · ${prettyModel(card.model)} · ${card.status} · ${plural(card.steps, 'step')}`}</Text>
-          <Text dimColor wrap="truncate">{`parent: ${shorten(parentLabel(card, cards, a.ids, cfg.architectLabel.toLowerCase()), Math.max(10, W - 12))}`}</Text>
-          {card.tools.length === 0 ? <Text color={C.faint}>no tool calls yet</Text> : null}
-          {card.tools.map(n => (
-            <Text color={n.isError ? C.warn : C.text} wrap="truncate">
-              {`${n.isError ? '✗' : '·'} ${n.text}`}
-            </Text>
-          ))}
-          {card.answer ? (
-            <Text dimColor wrap="wrap">
-              {`» ${shorten(card.answer, 240)}`}
-            </Text>
-          ) : null}
-        </Box>
-      ) : null
-
-    const body =
-      feed.readAt === 0 && !feed.deny && feed.entries.length === 0 ? (
-        <Text color={C.faint}>reading…</Text>
-      ) : feed.entries.length === 0 ? (
-        <Text color={feed.deny ? C.warn : C.faint} wrap="wrap">
-          {feed.deny ? `transcript unavailable: ${feed.deny}` : 'no messages yet'}
-        </Text>
-      ) : (
-        <Box flexDirection="column" width={W}>
-          {feed.omitted > 0 ? <Text color={C.faint}>{`… ${plural(feed.omitted, 'earlier message')}`}</Text> : null}
-          {feed.entries.map((m, i) => (
-            <Box key={`feed-${i}`} flexDirection="column" width={W}>
-              {m.role === 'assistant' ? (
-                <Text color={C.agent} bold>
-                  ◆ assistant
-                </Text>
-              ) : (
-                <Text color={C.dim}>▶ user</Text>
-              )}
-              {m.text ? (
-                <Text color={m.role === 'user' ? C.dim : C.text} wrap="wrap">
-                  {m.text}
-                </Text>
-              ) : null}
-              {m.toolsOmitted ? <Text color={C.faint}>{`… (+${plural(m.toolsOmitted, 'tool call')})`}</Text> : null}
-              {m.tools.map((t, k) => (
-                <Box key={`feed-${i}-tool-${k}`} flexDirection="column" width={W}>
-                  <Text color={t.isError ? C.warn : C.text} wrap="truncate">
-                    {shortenCells(`${t.isError ? '✗' : '⚒'} ${t.text}`, W)}
-                  </Text>
-                  {t.result.map(l => (
-                    <Text color={t.isError ? C.warn : C.dim} wrap="truncate">
-                      {`  ${shortenCells(l, W - 2)}`}
-                    </Text>
-                  ))}
-                  {t.more > 0 ? <Text color={C.faint}>{`  ${shortenCells(`… (+${plural(t.more, 'line')})`, W - 2)}`}</Text> : null}
-                  {t.isPending ? <Text color={C.faint}>  …</Text> : null}
-                </Box>
-              ))}
-            </Box>
-          ))}
-        </Box>
-      )
-
-    return (
-      <Box flexDirection="column" width={W}>
-        <Box width={W} height={1} overflow="hidden">
-          <Text color={C.agent} bold wrap="truncate">
-            {card ? cardTitle(card) : feed.agentId}
-          </Text>
-        </Box>
-        <Box width={W}>
-          <Box width={Math.max(1, W - buttonW - 1)} height={1} overflow="hidden">
-            <Text color={stateColor} wrap="truncate">
-              {shortenCells(kind, Math.max(1, W - buttonW - 1))}
-            </Text>
-          </Box>
-          {card ? (
-            <Box flexShrink={0} marginLeft={1}>
-              <Button key="agent-summary" plain hotkey="i" label={label} onPress={toggleSummary} />
-            </Box>
-          ) : null}
-        </Box>
-        {summary}
-        <Text color={C.faint}>{'─'.repeat(W)}</Text>
-        {body}
-        {feed.readAt > 0 && (feed.entries.length > 0 || !feed.deny) ? (
-          <Text color={C.faint} wrap="truncate">
-            {`read ${fmtClock(feed.readAt)}${feed.source === 'transcript' ? ' · from the saved transcript' : ''}`}
-          </Text>
-        ) : null}
       </Box>
     )
   })
