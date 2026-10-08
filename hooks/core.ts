@@ -85,6 +85,7 @@ export const normalizeCard = (stored: unknown): AgentCard => {
       received: 0,
       lastMessageAt: null,
       notified: false,
+      compactions: 0,
     },
     stored,
   )
@@ -98,6 +99,7 @@ export const normalizeCard = (stored: unknown): AgentCard => {
     received: count(c.received),
     lastMessageAt: typeof c.lastMessageAt === 'number' ? c.lastMessageAt : null,
     notified: c.notified === true,
+    compactions: count(c.compactions),
   }
 }
 
@@ -621,6 +623,66 @@ export const cardKind = (c: AgentCard, parent: AgentCard | null, width: number) 
 /** A card's third row: its context, its output and its steps, or `starting…` before its first step. */
 export const cardStats = (c: AgentCard) =>
   c.steps > 0 ? `ctx ${kTokens(c.ctx)} · out ${kTokens(c.out)} · ${plural(c.steps, 'step')}` : 'starting…'
+
+// ---------------------------------------------------------------- context windows
+
+/** A model id as the windows table keys it: lower case, trimmed. */
+const windowKey = (id: string) => id.trim().toLowerCase()
+/** The same model whatever its window variant: the `[1m]` suffix dropped. */
+const modelFamily = (id: string) => windowKey(id).replace(/\[1m\]$/, '')
+
+/** Windows by model, read leniently: only positive numbers. */
+export const normalizeWindows = (stored: unknown): Record<string, number> =>
+  isObject(stored) ? Object.fromEntries(Object.entries(stored).filter((kv): kv is [string, number] => typeof kv[1] === 'number' && kv[1] > 0)) : {}
+
+/** The table after the main loop measured `window` on `model`; the latest 12 models kept. */
+export const recordWindow = (windows: Record<string, number>, model: string, window: number): Record<string, number> => {
+  const key = windowKey(model)
+  if (!key || !(window > 0) || windows[key] === window) return windows
+  const rest = Object.entries(windows).filter(([k]) => k !== key)
+  return Object.fromEntries([...rest, [key, window] as [string, number]].slice(-12))
+}
+
+/**
+ * An agent's context window. Only the main loop's is ever measured, so: exact when the main loop
+ * was measured on this very model; inferred from the same model measured under another variant
+ * (`[1m]` or not, whose windows may differ); inferred as the main loop's own otherwise; null when
+ * nothing was measured.
+ */
+export const windowFor = (model: string, windows: Record<string, number>, mainWindow: number): { window: number; inferred: boolean } | null => {
+  const exact = windows[windowKey(model)]
+  if (model && exact && exact > 0) return { window: exact, inferred: false }
+  const family = Object.entries(windows).find(([k, w]) => model && modelFamily(k) === modelFamily(model) && w > 0)
+  if (family) return { window: family[1], inferred: true }
+  return mainWindow > 0 ? { window: mainWindow, inferred: true } : null
+}
+
+/** A card's third row in runs: `ctx `, the gauge's filled and empty cells, the rest, compactions. */
+export type StatsRow = { lead: string; on: string; off: string; tail: string; comp: string; level: 'ok' | 'high' | 'full' | null }
+
+/**
+ * A card's third row within `width` cells: `ctx ▰▰▰▱▱▱▱▱ 38% · out 3k · 7 steps ⟲1`, the
+ * percentage marked `~` when the window is inferred, its level `high` from 70 % and `full` past
+ * 90 %. Narrower, the gauge takes 4 cells, then none; with no window, `ctx 12k` as before.
+ */
+export const cardStatsRow = (c: AgentCard, win: { window: number; inferred: boolean } | null, width: number): StatsRow => {
+  const none = { on: '', off: '', tail: '', comp: '', level: null }
+  if (c.steps === 0) return { ...none, lead: shortenCells('starting…', width) }
+  const compacted = c.compactions > 0 ? ` ⟲${c.compactions}` : ''
+  const comp = cellWidth(compacted) < width ? compacted : ''
+  const room = width - cellWidth(comp)
+  if (!win) return { ...none, comp, lead: shortenCells(cardStats(c), room) }
+  const pct = Math.round((c.ctx / win.window) * 100)
+  const level = pct > 90 ? 'full' : pct >= 70 ? 'high' : 'ok'
+  const tail = ` ${pct}%${win.inferred ? '~' : ''} · out ${kTokens(c.out)} · ${plural(c.steps, 'step')}`
+  for (const cells of [8, 4]) {
+    if (4 + cells + cellWidth(tail) <= room) {
+      const g = gauge(pct, cells)
+      return { lead: 'ctx ', on: g.on, off: g.off, tail, comp, level }
+    }
+  }
+  return { ...none, comp, level, lead: 'ctx', tail: ` ${shortenCells(tail, Math.max(0, room - 4))}` }
+}
 
 export type TreeRow = { card: AgentCard; depth: number; prefix: string; parent: AgentCard | null }
 

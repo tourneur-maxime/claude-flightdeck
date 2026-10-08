@@ -68,6 +68,8 @@ export type AgentCard = {
   lastMessageAt: number | null
   /** The main loop was told it finished (a task notification naming it). */
   notified: boolean
+  /** Times its own transcript was compacted. */
+  compactions: number
 }
 
 /** A model loop whose id matches no card: a workflow agent, a compaction or a memory fork. */
@@ -120,6 +122,8 @@ declare module 'claude-code' {
       receipt: Receipt | null
       view: View
       roster: Roster
+      /** Context windows by model id (lower case), learnt from the main loop's measurements. */
+      windows: Record<string, number>
     }
   }
 }

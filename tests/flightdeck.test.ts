@@ -14,6 +14,7 @@ import {
   cardMail,
   cardSpine,
   cardStats,
+  cardStatsRow,
   cellWidth,
   consultTimeline,
   describeInput,
@@ -39,6 +40,7 @@ import {
   adviceLine,
   receiptOf,
   recordCheck,
+  recordWindow,
   CLAWD,
   redact,
   resolveRecipient,
@@ -50,6 +52,7 @@ import {
   taskIdOf,
   timeBars,
   verdictOf,
+  windowFor,
 } from '../hooks/core'
 import type { Check } from '../types'
 
@@ -420,6 +423,45 @@ test('a message counts on both cards, resumes an ended recipient, and flashes th
   expect([normalizeCard({ id: 'old' }).sent, normalizeCard({ id: 'old' }).received, normalizeCard({ id: 'old' }).lastMessageAt, normalizeCard({ id: 'old' }).notified]).toEqual([0, 0, null, false])
   expect(normalizeCard({ id: 'odd', sent: -3, received: 'x', lastMessageAt: '1' }).sent).toBe(0)
   expect(normalizeLog([{ at: 1, who: 'main', text: 'x', kind: 'message' }])[0]?.kind).toBe('message')
+})
+
+test("an agent's window: exact on the model the main loop was measured on, inferred otherwise, none before a measurement", () => {
+  let w = recordWindow({}, 'claude-opus-5-5', 1_000_000)
+  w = recordWindow(w, '', 200_000) // no model: nothing learnt
+  w = recordWindow(w, 'claude-haiku-5', 0) // no window: nothing learnt
+  expect(w).toEqual({ 'claude-opus-5-5': 1_000_000 })
+  expect(windowFor('claude-opus-5-5', w, 1_000_000)).toEqual({ window: 1_000_000, inferred: false })
+  expect(windowFor('Claude-Opus-5-5', w, 1_000_000)).toEqual({ window: 1_000_000, inferred: false })
+  // The same model under another variant: its window may differ ([1m] or not), so inferred.
+  expect(windowFor('claude-opus-5-5[1m]', w, 1_000_000)).toEqual({ window: 1_000_000, inferred: true })
+  expect(windowFor('claude-sonnet-5-5', w, 1_000_000)).toEqual({ window: 1_000_000, inferred: true }) // the main loop's
+  expect(windowFor('', w, 1_000_000)).toEqual({ window: 1_000_000, inferred: true })
+  expect(windowFor('claude-sonnet-5-5', {}, 0)).toBe(null)
+  const many = Array.from({ length: 14 }, (_, i) => i).reduce((t, i) => recordWindow(t, `m${i}`, 1000 + i), {} as Record<string, number>)
+  expect(Object.keys(many).length).toBe(12)
+})
+
+test("a card's third row: a gauge of its context against its window, ~ when inferred, its level, narrower without the gauge", () => {
+  const c = { ...normalizeCard({ id: 'g' }), ctx: 380_000, out: 3_000, steps: 7 }
+  const text = (r: ReturnType<typeof cardStatsRow>) => r.lead + r.on + r.off + r.tail + r.comp
+  const exact = cardStatsRow(c, { window: 1_000_000, inferred: false }, 54)
+  expect([text(exact), exact.level]).toEqual(['ctx ▰▰▰▱▱▱▱▱ 38% · out 3k · 7 steps', 'ok'])
+  expect(text(cardStatsRow(c, { window: 1_000_000, inferred: true }, 54))).toBe('ctx ▰▰▰▱▱▱▱▱ 38%~ · out 3k · 7 steps')
+  expect(cardStatsRow({ ...c, ctx: 700_000 }, { window: 1_000_000, inferred: false }, 54).level).toBe('high')
+  expect(cardStatsRow({ ...c, ctx: 900_000 }, { window: 1_000_000, inferred: false }, 54).level).toBe('high')
+  expect(cardStatsRow({ ...c, ctx: 910_000 }, { window: 1_000_000, inferred: false }, 54).level).toBe('full')
+  const comp = cardStatsRow({ ...c, compactions: 2 }, { window: 1_000_000, inferred: false }, 54)
+  expect([text(comp), comp.comp]).toEqual(['ctx ▰▰▰▱▱▱▱▱ 38% · out 3k · 7 steps ⟲2', ' ⟲2'])
+  // Narrower: the gauge takes 4 cells, then none, then the rest is cut; never past the width.
+  expect(text(cardStatsRow(c, { window: 1_000_000, inferred: false }, 32))).toBe('ctx ▰▰▱▱ 38% · out 3k · 7 steps')
+  expect(text(cardStatsRow(c, { window: 1_000_000, inferred: false }, 26))).toBe('ctx 38% · out 3k · 7 steps')
+  for (let w = 8; w <= 60; w += 1) {
+    for (const win of [null, { window: 1_000_000, inferred: true }]) expect(cellWidth(text(cardStatsRow({ ...c, compactions: 1 }, win, w))) <= w).toBe(true)
+  }
+  // No window: the tokens as before; no step yet: starting.
+  expect(text(cardStatsRow(c, null, 54))).toBe(cardStats(c))
+  expect(text(cardStatsRow({ ...c, steps: 0 }, { window: 1, inferred: false }, 54))).toBe('starting…')
+  expect(normalizeCard({ id: 'old' }).compactions).toBe(0)
 })
 
 // ---------------------------------------------------------------- drawing
@@ -1299,4 +1341,40 @@ test('a step on an ended card means it was resumed: the card runs again', async 
   const after = await $.ui.mount({ ...pane(64), surface: 'terminal' })
   expect(await after.find({ text: /^✓ done $/ })).toBeDefined()
   await after.unmount()
+})
+
+test("a card's context gauge: exact on the main loop's model, ~ on another; a compaction of its own counted", async ($, on) => {
+  engine(on)
+  stepper(on, { input_tokens: 380_000, model: 'claude-opus-5-5' })
+  let n = 0
+  on('agent.spawn', () => ({ model: n++ === 0 ? 'claude-opus-5-5' : 'claude-sonnet-5-5', agentId: `cg${n}` }))
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  const summary = [{ role: 'user' as const, text: 'summary of the work so far', toolUses: [] }]
+  on('session.compact', () => ({ messages: summary, tokensBefore: 380_000, tokensAfter: 40_000 }))
+  await $.turn.start({ text: 'go', turnId: 'CG1' })
+  await drain($, { turnId: 'CG1', index: 0, model: 'claude-opus-5-5', messageCount: 1 }) // the main loop's model
+  await $.session.measure({ context: { window: 1_000_000, tokens: 100_000, percent: 10 }, rateLimits: [], cost: { usd: 0 }, changed: ['context'] })
+  await $.agent.spawn(spawn('general-purpose', 'Implement the parser'))
+  await $.agent.spawn(spawn('Explore', 'Map the call sites'))
+  for (const id of ['cg1', 'cg2']) await drain($, { turnId: 'CG1', index: 1, model: 'x', messageCount: 2, agentId: id })
+  await $.session.compact({ trigger: 'auto', agentId: 'cg1', messages: summary })
+  await $.session.compact({ trigger: 'precompute', agentId: 'cg2', messages: summary }) // not one that stands
+  for (const cols of [64, 120]) {
+    const ui = await $.ui.mount({ ...pane(cols), surface: 'terminal' })
+    expect(textOf(await ui.find({ key: 'card-stats-cg1' }))).toBe('ctx ▰▰▰▱▱▱▱▱ 38% · out 100 · 1 step ⟲1')
+    expect(textOf(await ui.find({ key: 'card-stats-cg2' }))).toBe('ctx ▰▰▰▱▱▱▱▱ 38%~ · out 100 · 1 step')
+    const runs = under(await ui.find({ key: 'card-stats-cg1' })).filter(t => t.type === 'Text')
+    expect(runs.find(t => t.text === '▰▰▰')?.props.color).toBe('suggestion')
+    expect(runs.find(t => t.text === ' ⟲1')?.props.color).toBe('warning')
+    await ui.unmount()
+  }
+  // At 40 columns the row gives up the gauge rather than run past the card.
+  const narrow = await $.ui.mount({ ...pane(40), surface: 'terminal' })
+  const cw = Number((await narrow.find({ key: 'agent-cg1' }))?.props.width) - 4
+  expect(cellWidth(textOf(await narrow.find({ key: 'card-stats-cg1' }))) <= cw).toBe(true)
+  expect(textOf(await narrow.find({ key: 'card-stats-cg2' }))).toMatch(/^ctx .*38%~/)
+  await narrow.unmount()
+  const log = await $.ui.mount({ ...pane(64), surface: 'terminal' })
+  expect(await log.find({ text: /^compacted \(auto\) · 380k→40k$/ })).toBeDefined()
+  await log.unmount()
 })

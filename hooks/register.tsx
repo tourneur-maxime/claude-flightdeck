@@ -21,7 +21,7 @@ import {
   cardKind,
   cardMail,
   cardSpine,
-  cardStats,
+  cardStatsRow,
   cardTitle,
   cellWidth,
   CLAWD,
@@ -52,6 +52,7 @@ import {
   normalizeCard,
   normalizeGate,
   normalizeLog,
+  normalizeWindows,
   noteMessage,
   noteTool,
   PALETTES,
@@ -65,6 +66,7 @@ import {
   adviceLine,
   receiptOf,
   recordCheck,
+  recordWindow,
   redact,
   resolveRecipient,
   settleCheck,
@@ -75,6 +77,7 @@ import {
   taskIdOf,
   timeBars,
   verdictOf,
+  windowFor,
 } from './core'
 import type { ClawdSpan, Config, Panel, PendingMessage } from './core'
 
@@ -97,6 +100,7 @@ const turn = atom({ plugin: 'flightdeck', key: 'turn' } as const, DEFAULT_TURN)
 const receipt = atom({ plugin: 'flightdeck', key: 'receipt' } as const, null)
 const view = atom({ plugin: 'flightdeck', key: 'view' } as const, DEFAULT_VIEW)
 const roster = atom({ plugin: 'flightdeck', key: 'roster' } as const, DEFAULT_ROSTER)
+const windows = atom({ plugin: 'flightdeck', key: 'windows' } as const, {})
 
 type ServerBlock = { type: string; id?: string; name?: string; tool_use_id?: string }
 
@@ -132,6 +136,16 @@ async function getView($: EngineInterface): Promise<View> {
 async function getRoster($: EngineInterface): Promise<Roster> {
   const r = normalize(DEFAULT_ROSTER, await read($, roster))
   return { architectTypes: listOf(r.architectTypes) }
+}
+
+async function getWindows($: EngineInterface): Promise<Record<string, number>> {
+  return normalizeWindows(await read($, windows))
+}
+
+/** The main loop's context window, measured: learnt for its model, the only one ever measured. */
+async function learnWindow($: EngineInterface, window: number) {
+  const model = (await getMain($)).model
+  if (model && window > 0) await update($, windows, w => recordWindow(normalizeWindows(w), model, window))
 }
 
 /** A stored shape older than this build's: drop what cannot be read, keep the rest. */
@@ -298,6 +312,7 @@ export const register: Register = (on, options) => {
         costUsd: u.cost?.usd ?? null,
         limits: u.rateLimits.map(r => ({ kind: r.kind, pct: r.percentUsed })),
       }))
+      await learnWindow($, u.context.window)
     }
     if (cfg.openOnStart) void openPane($).catch(() => undefined)
     await refreshStatus($, cfg)
@@ -376,6 +391,9 @@ export const register: Register = (on, options) => {
         const x = normalize(DEFAULT_MAIN, m)
         return { ...x, model: e.model, effort: String(e.effort ?? x.effort), steps: x.steps + 1 }
       })
+      // A model with no window yet takes the last one measured; the next measurement corrects it.
+      const [w, u] = await Promise.all([getWindows($), getUsage($)])
+      if (u.window > 0 && w[e.model.trim().toLowerCase()] === undefined) await learnWindow($, u.window)
       return yield* next(e)
     }
     const result = yield* next(e)
@@ -401,6 +419,7 @@ export const register: Register = (on, options) => {
       costUsd: e.cost?.usd ?? null,
       limits: e.rateLimits.map(r => ({ kind: r.kind, pct: r.percentUsed })),
     }))
+    await learnWindow($, e.context.window)
     if (e.changed.includes('context')) await refreshStatus($, cfg)
     return next(e)
   })
@@ -414,6 +433,14 @@ export const register: Register = (on, options) => {
         return { ...u, compactions: u.compactions + 1, lastCompactAt: now }
       })
       await say($, 'main', `context compacted (${e.trigger})`)
+    } else if (e.agentId && e.trigger !== 'precompute' && done.skip === undefined) {
+      // A subagent's own transcript compacted: counted on its card.
+      const id = e.agentId
+      if ((await getCards($)).some(c => c.id === id)) {
+        await update($, agents, list => listOf<unknown>(list).map(normalizeCard).map(c => (c.id === id ? { ...c, compactions: c.compactions + 1 } : c)))
+        const sizes = done.tokensBefore !== undefined && done.tokensAfter !== undefined ? ` · ${kTokens(done.tokensBefore)}→${kTokens(done.tokensAfter)}` : ''
+        await say($, await whoIs($, id), `compacted (${e.trigger})${sizes}`, 'info', id)
+      }
     }
     return done
   })
@@ -614,7 +641,7 @@ export const register: Register = (on, options) => {
     // Only the terminal and the desktop draw a Client; elsewhere the table may still carry the
     // name, but what it draws is an empty box: those surfaces get the still drawing instead.
     const hasClient = (e.surface === 'terminal' || e.surface === 'desktop') && 'Client' in els
-    const [m, u, a, g, cards, lp, lines, t, r, v, now] = await Promise.all([
+    const [m, u, a, g, cards, lp, lines, t, r, v, now, wins] = await Promise.all([
       getMain($),
       getUsage($),
       getArchitect($),
@@ -626,6 +653,7 @@ export const register: Register = (on, options) => {
       read($, receipt),
       getView($),
       $.clock.now(),
+      getWindows($),
     ])
     const W = Math.max(40, e.props.bodyColumns)
     const layout = v.layout ?? cfg.layout
@@ -893,6 +921,7 @@ export const register: Register = (on, options) => {
               const isMax = c.lastStop === 'max_tokens'
               // A message just sent or received: the border in amber for FLASH_MS.
               const flash = isFlashing(c, now)
+              const stats = cardStatsRow(c, windowFor(c.model, wins, u.window), cw)
               // Digits 1-9 only: the cards after the ninth expand by a press.
               const hot = i < 9 ? { hotkey: String(i + 1) } : {}
               // Five rows between the borders, each one row high (truncated), so a card is
@@ -925,9 +954,14 @@ export const register: Register = (on, options) => {
                       </Box>
                     ) : null}
                   </Box>
-                  <Text dimColor wrap="truncate">
-                    {shortenCells(cardStats(c), cw)}
-                  </Text>
+                  {/* Its context against its window (inferred: `~`), output, steps and compactions. */}
+                  <Box key={`card-stats-${c.id}`} width={cw} height={1} overflow="hidden">
+                    <Text dimColor>{stats.lead}</Text>
+                    {stats.on ? <Text color={stats.level === 'full' ? C.warn : stats.level === 'high' ? C.amber : C.agent}>{stats.on}</Text> : null}
+                    {stats.off ? <Text color={C.faint}>{stats.off}</Text> : null}
+                    {stats.tail ? <Text dimColor>{stats.tail}</Text> : null}
+                    {stats.comp ? <Text color={C.amber}>{stats.comp}</Text> : null}
+                  </Box>
                   <Box>
                     {/* The clock takes at most 5 cells (12h59) after the state. */}
                     <Text color={isMax ? C.warn : statusColor(c)}>{shortenCells(`${glyph(c)} ${isMax ? 'max_tokens' : c.status}`, Math.max(1, cw - 6)) + ' '}</Text>
