@@ -1,7 +1,7 @@
 {
   "name": "flightdeck",
   "version": "0.9.0",
-  "description": "Flightdeck: a live agent dashboard for Claude Code. Main model vitals, an on-call architect, every permission check, a list of subagent cards with each agent's whole conversation a click away, a turn receipt and a session log, all from real session events",
+  "description": "Flightdeck: a live agent dashboard for Claude Code. Main model vitals, an on-call architect, every permission check, subagent swimlanes, each opening on its card and its agent's whole conversation, a turn receipt and a session log, all from real session events",
   "author": {
     "name": "Stephen Casella",
     "url": "https://github.com/scasella"

@@ -1,7 +1,7 @@
 {
   "name": "claude-flightdeck",
   "metadata": {
-    "description": "Flightdeck: a live agent dashboard for Claude Code. Main model vitals, an on-call architect, every permission check, a list of subagent cards, a turn receipt and a session log."
+    "description": "Flightdeck: a live agent dashboard for Claude Code. Main model vitals, an on-call architect, every permission check, subagent swimlanes opening on their cards, a turn receipt and a session log."
   },
   "owner": {
     "name": "Stephen Casella",

@@ -551,15 +551,21 @@ const spawn = (subagentType: string, description: string, parentAgentId?: string
   ...(parentAgentId ? { parentAgentId } : {}),
 })
 
-/** The world under the agent view, recorded: panes opened and closed, conversations read. */
+/**
+ * The world under the agent view, recorded: panes opened and closed, conversations read. The
+ * Flightdeck pane asking the keys back (opened again by its own id with `focus`, as the agent view
+ * does when its focus on `back` is refused) is no pane opened: it is counted apart.
+ */
 const agentWorld = (on: On, answer: (agentId: string | undefined) => unknown = () => []) => {
   const w = {
     opened: [] as Record<string, unknown>[],
+    refocused: [] as string[],
     closed: [] as string[],
     reads: [] as (string | undefined)[],
   }
   on('ui.open', (_$, e) => {
-    w.opened.push({ ...e })
+    if (e.id === 'flightdeck' && e.focus === true) w.refocused.push(e.id)
+    else w.opened.push({ ...e })
     return { value: { isPlaced: true as const } }
   })
   on('ui.close', (_$, e) => {
@@ -661,6 +667,8 @@ test('subagents become swimlanes, a lane opens its card, its inspect turns the p
   expect(await ui.find({ type: 'Text', text: /^Write the parser tests$/ })).toBeUndefined()
   await inspect(ui, 'ag1')
   expect(world.opened).toEqual([]) // no second pane: this one turns to the agent
+  // The kit draws no focus ring, so the focus on back is refused: the pane asks the keys back, by its own id.
+  expect(world.refocused.length > 0 && world.refocused.every(id => id === 'flightdeck')).toBe(true)
   expect(textOf(await ui.find({ key: 'agent-heading' }))).toBe('Agent · Write the parser tests · ◐ running · sonnet')
   expect(await ui.find({ key: 'lane-ag2-title' })).toBeUndefined() // the lanes give way to the conversation
   // The summary, on its `i` key, in the same pane.

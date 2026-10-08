@@ -475,9 +475,25 @@ async function openAgent($: EngineInterface, card: AgentCard) {
   await update($, agentFeed, () => reading).catch(() => undefined)
   await update($, view, v => ({ ...normalize(DEFAULT_VIEW, v), agent: card.id })).catch(() => undefined)
   await $.ui.scroll({ in: PANE, to: 'start' }).catch(() => undefined)
-  await $.ui.focus({ requestId: PANE, key: 'agent-back' }).catch(() => undefined)
+  await focusBack($)
   await refreshFeed($, card.id, epoch)
-  if (epoch === feedWatch.epoch) await $.ui.scroll({ in: PANE, to: 'start' }).catch(() => undefined)
+  // Back to the top after the first read, unless the person has scrolled down to the end meanwhile.
+  if (epoch === feedWatch.epoch && !feedWatch.follow) await $.ui.scroll({ in: PANE, to: 'start' }).catch(() => undefined)
+}
+
+/**
+ * The focus ring on the agent view's `back`, so b, p, n and i reach the pane. Refused when the
+ * pane no longer holds the keys (the pressed element is gone): then the pane asks for them, which
+ * the surface grants only while the prompt holds them over an empty composer, and tries again.
+ * Never rejects; a refusal left standing is said in the log.
+ */
+async function focusBack($: EngineInterface) {
+  const refused = (r: { deny?: string } | null) => r === null || r.deny !== undefined
+  const first = await $.ui.focus({ requestId: PANE, key: 'agent-back' }).catch(() => null)
+  if (!refused(first)) return
+  await $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS, rows: 8, focus: true }).catch(() => undefined)
+  const again = await $.ui.focus({ requestId: PANE, key: 'agent-back' }).catch(() => null)
+  if (refused(again)) await say($, 'flightdeck', 'agent view: the keys stayed with the prompt; ctrl+x tab for b, p, n, i').catch(() => undefined)
 }
 
 /**
@@ -558,7 +574,7 @@ export const register: Register = (on, options) => {
     }
     const opened = await openPane($)
     if (!opened.isPlaced) return { text: `Flightdeck is not shown yet: ${opened.reason}` }
-    return { text: "Flightdeck opened. Focus it with ctrl+x tab; 1-9 show an agent's conversation (b back), f/s/o open the gate rows." }
+    return { text: "Flightdeck opened. Focus it with ctrl+x tab; 1-9 open an agent's card (inspect › shows its conversation, b back), f/s/o open the gate rows." }
   })
 
   on('classic.UserPromptSubmit', async ($, e, next) => {
@@ -1609,7 +1625,7 @@ export const register: Register = (on, options) => {
           {mascot}
           <Box key="agent-nav" width={W} justifyContent="space-between">
             <Box columnGap={1} flexShrink={0}>
-              <Button key="agent-back" plain hotkey="b" label="back" onPress={() => closeAgentView($, true)} />
+              <Button key="agent-back" plain hotkey="b" autoFocus label="back" onPress={() => closeAgentView($, true)} />
               <Button key="agent-prev" plain hotkey="p" label="‹ prev" dimColor={!hasPrev} onPress={step(-1)} />
               <Button key="agent-next" plain hotkey="n" label="next ›" dimColor={!hasNext} onPress={step(1)} />
             </Box>
